@@ -16,10 +16,11 @@ from PyQt6.QtWidgets import (
 
 import PhysicsLibrary as pl
 
+from ..background import run_in_background
 from ..sidecar import load_markers_from_sidecar
 from ..analysis.splice import load_splice_from_sidecar
 from ..plot_signal import refresh_plot_signal_options
-from ..toasts import show_error, show_success
+from ..toasts import show_error, show_window_toast
 from ..window_fit import fit_to_screen
 
 
@@ -150,7 +151,7 @@ class GenericLoaderDialog(QDialog):
         refresh_plot_signal_options(self.ctx)  # no 'signals' map here — hides the Plot dropdown
         self.accept()
         simple_plot(self.ctx)
-        show_success(self.ctx, f"Loaded: {t.name}")
+        show_window_toast(self.ctx, f"Loaded: {t.name}")
 
 
 def launch_generic_file_loader(ctx):
@@ -175,14 +176,19 @@ def reload_generic(ctx, path):
 
 
 def _load_generic_path(ctx, path):
-    try:
-        tables = pl.load_any_file(path)
-    except Exception as e:
-        show_error(ctx, f"Could not parse file:\n{e}")
-        return
-    if not tables:
-        show_error(ctx, "No usable tabular data found in this file.")
-        return
+    def _work(progress):
+        return pl.load_any_file(path, progress=progress)
 
-    dlg = GenericLoaderDialog(ctx.win, ctx, tables, path)
-    dlg.exec()
+    def _on_success(tables):
+        if not tables:
+            show_error(ctx, "No usable tabular data found in this file.")
+            return
+        dlg = GenericLoaderDialog(ctx.win, ctx, tables, path)
+        dlg.exec()
+
+    def _on_error(msg):
+        show_error(ctx, f"Could not parse file:\n{msg}")
+
+    # Parsing runs off the GUI thread (so a big spreadsheet doesn't freeze the
+    # window) with a progress toast; the table/column picker opens afterwards.
+    run_in_background(ctx, _work, _on_success, _on_error, label=f"Reading {os.path.basename(path)}")

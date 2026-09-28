@@ -24,7 +24,7 @@ import PhysicsLibrary as pl
 
 from ..background import run_in_background
 from ..context import export_file
-from ..toasts import show_error, show_window_toast
+from ..toasts import show_error
 from ..window_fit import fit_to_screen
 
 
@@ -93,7 +93,8 @@ class ValidationSummaryDialog(QDialog):
         ts = datetime.datetime.now().strftime("%H%M%S")
         export_file(self.ctx, self, "Export Statistical Validation",
                      f"StatisticalValidation_{ts}.csv", "CSV (*.csv);;Text (*.txt)",
-                     lambda path: self.df.to_csv(path, index=False))
+                     lambda path: self.df.to_csv(path, index=False),
+                     recording_type="Text Field Study", recording_source=self.ctx.study_data_path)
 
 
 def launch_field_study_validation(ctx):
@@ -107,12 +108,13 @@ def launch_field_study_validation(ctx):
                         "validation needs at least one comparison.")
         return
 
-    def _work():
+    def _work(progress):
         return pl.run_validation_pipeline(
             ctx.study_data_path,
             text_fields=config["text_fields"],
             paired_fields=paired_fields,
             file_glob=config.get("file_glob", "P-*.json"),
+            progress=progress,
         )
 
     def _on_success(summary_df):
@@ -122,9 +124,7 @@ def launch_field_study_validation(ctx):
     def _on_error(msg):
         show_error(ctx, msg)
 
-    if ctx.settings.get("background_loading"):
-        # Re-embeds from scratch (doesn't reuse the main results table's
-        # embeddings, which aren't kept around) plus a bootstrap and a
-        # leave-one-out pass per pair — can take a while.
-        show_window_toast(ctx, "Running statistical validation… this can take a while")
-    run_in_background(ctx, _work, _on_success, _on_error)
+    # Re-embeds from scratch (doesn't reuse the main results table's
+    # embeddings, which aren't kept around) plus a bootstrap and a
+    # leave-one-out pass per pair — can take a while.
+    run_in_background(ctx, _work, _on_success, _on_error, label="Running statistical validation")

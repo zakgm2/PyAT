@@ -16,7 +16,7 @@ from ..background import run_in_background
 from ..sidecar import load_markers_from_sidecar
 from ..analysis.splice import load_splice_from_sidecar
 from ..plot_signal import refresh_plot_signal_options
-from ..toasts import show_error, show_success, show_window_toast
+from ..toasts import show_error, show_window_toast
 
 
 def open_file(ctx):
@@ -40,8 +40,8 @@ def reload_file(ctx, file_path):
 def _load_single_file(ctx, file_path):
     from ..plotting import simple_plot
 
-    def _work():
-        return pl.load_dataset_file(file_path)
+    def _work(progress):
+        return pl.load_dataset_file(file_path, progress=progress)
 
     def _on_success(ds):
         n_ch = ds.metadata.get('n_channels', ds.num_channels // 2)
@@ -77,11 +77,9 @@ def _load_single_file(ctx, file_path):
         load_markers_from_sidecar(ctx)
         refresh_plot_signal_options(ctx)  # no 'signals' map here — hides the Plot dropdown
         simple_plot(ctx)
-        show_success(ctx, f"File: {os.path.basename(file_path)}")
+        show_window_toast(ctx, f"File: {os.path.basename(file_path)}")
 
     def _on_error(msg):
         show_error(ctx, msg)
 
-    if ctx.settings.get("background_loading"):
-        show_window_toast(ctx, "Loading Oxysoft file…")
-    run_in_background(ctx, _work, _on_success, _on_error)
+    run_in_background(ctx, _work, _on_success, _on_error, label="Loading Oxysoft file")

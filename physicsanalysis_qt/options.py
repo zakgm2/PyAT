@@ -78,12 +78,13 @@ class OptionsDialog(QDialog):
         gr.addWidget(self.combo_regression, 0, 1)
         regression_note = QLabel(
             "Used to regress the isosbestic (415nm) stream onto the signal (465nm)\n"
-            "stream during motion correction. Takes effect on the next TDT folder\n"
-            "load/reload — an already-loaded recording isn't reprocessed.\n"
+            "stream during motion correction. Clicking OK reprocesses the currently\n"
+            "loaded TDT recording with the new method right away — no separate Reload\n"
+            "needed — and it applies to anything opened after this point too.\n"
             "The three methods can give noticeably different results on the same\n"
             "recording (e.g. how much of a transient near a motion artifact survives) —\n"
-            "worth reloading with each one to see what you actually get before\n"
-            "settling on one for a given dataset."
+            "worth trying each one to see what you actually get before settling on\n"
+            "one for a given dataset."
         )
         regression_note.setStyleSheet("color: gray;")
         regression_note.setWordWrap(True)
@@ -109,9 +110,11 @@ class OptionsDialog(QDialog):
 
         output_note = QLabel(
             "When set, CSV/PNG/PDF/SVG exports (Curve Fit, FFT, PETH, AUC,\n"
-            "plot exports, …) save straight here with no dialog at all.\n"
-            "Leave blank to get a save dialog instead, seeded from wherever\n"
-            "you last opened a file."
+            "plot exports, …) save straight here with no dialog at all — into\n"
+            "<this folder>/<TDT or Oxysoft or Generic or …>/<recording name>/,\n"
+            "so one recording's exports collect together across reloads and\n"
+            "sessions instead of piling up flat. Leave blank to get a save\n"
+            "dialog instead, seeded from wherever you last opened a file."
         )
         output_note.setStyleSheet("color: gray;")
         output_note.setWordWrap(True)
@@ -129,8 +132,8 @@ class OptionsDialog(QDialog):
 
         self.cb_threaded = QCheckBox(
             "Load data files on a background thread (default: on)\n"
-            "Keeps the UI responsive during large TDT/Oxysoft loads instead\n"
-            "of freezing until they finish."
+            "Keeps the UI responsive (and the progress toast moving) during\n"
+            "large loads and analyses instead of freezing until they finish."
         )
         self.cb_threaded.setChecked(ctx.settings["background_loading"])
         g2.addWidget(self.cb_threaded, 1, 0, 1, 2)
@@ -188,7 +191,9 @@ class OptionsDialog(QDialog):
         engine_changed = new_engine != self.ctx.settings["plot_engine"]
         self.ctx.settings["plot_engine"] = new_engine
 
-        self.ctx.settings["regression_method"] = _REGRESSION_VALUES[self.combo_regression.currentText()]
+        new_regression = _REGRESSION_VALUES[self.combo_regression.currentText()]
+        regression_changed = new_regression != self.ctx.settings.get("regression_method", "ols")
+        self.ctx.settings["regression_method"] = new_regression
 
         new_theme = self.combo_theme.currentText().lower()
         theme_changed = new_theme != self.ctx.settings.get("theme", "light")
@@ -210,6 +215,10 @@ class OptionsDialog(QDialog):
         if engine_changed:
             from .ui.main_window import switch_plot_engine
             switch_plot_engine(self.ctx)
+
+        if regression_changed and self.ctx.cache is not None and self.ctx.cache.get('source') == 'TDT':
+            from .ui.toolbar import _reload_current
+            _reload_current(self.ctx)
 
 
 def open_options_dialog(ctx):

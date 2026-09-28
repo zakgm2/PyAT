@@ -38,6 +38,9 @@ KEY FEATURES
     Python package, which isn't bundled with this build - install it
     yourself with `pip install sentence-transformers` if you want this
     one feature; everything else works without it.)
+  - Progress toasts: anything slow (loading a recording, splicing out
+    an artifact, the analysis runs) shows a live percentage in the
+    bottom-right corner while it works.
   - Dark mode, an Options dialog (default folder, render decimation,
     background loading, plot engine), and settings that persist
     between launches.

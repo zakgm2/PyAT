@@ -343,25 +343,32 @@ def launch_peak_finder(ctx):
 
     groups = dlg.groups
 
-    def _work():
+    def _work(progress):
+        plan = pl.Plan(progress, [("Smoothing the signal", 10), ("Searching for peaks", 90)])
+        plan.begin("Smoothing the signal")
         clean_signal = pl.smooth_signal(data_source, fs)
+        plan.begin("Searching for peaks")
         if scope == SCOPE_WHOLE:
-            return pl.find_significant_peaks(
+            peaks = pl.find_significant_peaks(
                 time_array, clean_signal, z_threshold=z_threshold,
                 min_distance_sec=dlg.min_distance, include_troughs=include_troughs,
             )
+            plan.done()
+            return peaks
         pre, post = get_window(ctx)
         if scope == SCOPE_SCAN_ALL_TYPES:
+            # One tick per event type (each type's own events are quick to search).
             return {
                 name: pl.find_peak_near_events(
                     time_array, clean_signal, times, pre, post,
                     z_threshold=z_threshold, include_troughs=include_troughs,
                 )
-                for name, times in groups.items()
+                for name, times in plan.track("Searching for peaks", groups.items())
             }
         return pl.find_peak_near_events(
             time_array, clean_signal, dlg.event_times, pre, post,
             z_threshold=z_threshold, include_troughs=include_troughs,
+            progress=plan.sub("Searching for peaks"),
         )
 
     def _on_success(result):
@@ -411,6 +418,4 @@ def launch_peak_finder(ctx):
     def _on_error(msg):
         show_error(ctx, f"Peak finding failed: {msg}")
 
-    if ctx.settings.get("background_loading"):
-        show_window_toast(ctx, "Finding significant peaks…")
-    run_in_background(ctx, _work, _on_success, _on_error)
+    run_in_background(ctx, _work, _on_success, _on_error, label="Finding significant peaks")

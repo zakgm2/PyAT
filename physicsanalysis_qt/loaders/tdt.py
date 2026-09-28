@@ -8,14 +8,14 @@ open_folder() also handles picking a *parent* directory containing
 several TDT block subfolders instead of one directly (_find_tdt_subfolders,
 _MultiTDTModeDialog, _TDTFolderPickerDialog) — reports how many it found
 and asks Single Experiment Analysis (pick one to open) or Hypothesis
-Testing (a placeholder for now, see _prompt_multi_tdt).
+Testing (group analysis across them, see analysis/group).
 """
 
 import os
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QButtonGroup, QListWidget, QFileDialog, QMessageBox,
+    QRadioButton, QButtonGroup, QListWidget, QFileDialog,
 )
 
 import PhysicsLibrary as pl
@@ -24,7 +24,7 @@ from ..background import run_in_background
 from ..sidecar import load_markers_from_sidecar
 from ..analysis.splice import load_splice_from_sidecar
 from ..plot_signal import refresh_plot_signal_options
-from ..toasts import show_error, show_success, show_window_toast
+from ..toasts import show_error, show_window_toast
 
 # Colors for the raw per-wavelength channels in the Plot dropdown/legend —
 # keyed by the 'channels' entry key PhysicsLibrary's process_tdt_folder()
@@ -136,12 +136,9 @@ def open_folder(ctx):
 class _MultiTDTModeDialog(QDialog):
     """Shown when Open Data Folder finds more than one TDT block inside
     the picked directory — reports the count and asks how to proceed.
-    Hypothesis Testing is a placeholder for now (see module docstring
-    note in open_folder's caller): there's no actual across-recordings
-    analysis built yet, and nothing real to validate one against, so it
-    just says so rather than pretending to offer something that isn't
-    there. Single Experiment Analysis is today's normal single-folder
-    flow, just with a folder to pick from afterward."""
+    Hypothesis Testing opens the group analysis setup (analysis/group)
+    over every recording found. Single Experiment Analysis is today's
+    normal single-folder flow, just with a folder to pick from afterward."""
 
     def __init__(self, parent, n_found):
         super().__init__(parent)
@@ -157,7 +154,7 @@ class _MultiTDTModeDialog(QDialog):
 
         self.rb_single = QRadioButton("Single Experiment Analysis — pick one recording to open")
         self.rb_single.setChecked(True)
-        self.rb_hypothesis = QRadioButton("Hypothesis Testing — compare across these recordings")
+        self.rb_hypothesis = QRadioButton("Group Analysis - compare across recordings")
         mode_group = QButtonGroup(self)
         mode_group.addButton(self.rb_single)
         mode_group.addButton(self.rb_hypothesis)
@@ -227,13 +224,8 @@ def _prompt_multi_tdt(ctx, found, base_path):
         return
 
     if mode_dlg.mode == "hypothesis":
-        QMessageBox.information(
-            ctx.win, "Hypothesis Testing",
-            "Hypothesis testing across multiple recordings isn't built yet — "
-            "this is here so the option exists once it is. For now, reopen "
-            "this folder and choose Single Experiment Analysis to look at one "
-            "recording at a time."
-        )
+        from ..analysis.group import launch_group_analysis
+        launch_group_analysis(ctx, found, base_path)
         return
 
     picker = _TDTFolderPickerDialog(ctx.win, found, base_path)
@@ -263,11 +255,11 @@ def _load_folder(ctx, folder_path):
 
     regression_method = ctx.settings.get("regression_method", "ols")
 
-    def _work():
+    def _work(progress):
         valid, msg = pl.validate_tdt_folder(folder_path)
         if not valid:
             raise ValueError(f"TDT validation failed: {msg}")
-        return pl.process_tdt_folder(folder_path, regression_method=regression_method)
+        return pl.process_tdt_folder(folder_path, regression_method=regression_method, progress=progress)
 
     def _on_success(result):
         # A stale splice from whatever was loaded before this must not
@@ -305,7 +297,12 @@ def _load_folder(ctx, folder_path):
         load_markers_from_sidecar(ctx)
         refresh_plot_signal_options(ctx)
         simple_plot(ctx)
-        show_success(ctx, f"Folder: {ctx.cache['store']}")
+        # No "Folder: X" here — the plot's own title already shows the store name (see
+        # plotting.py), so that would just repeat what's already on screen. The inlier
+        # fraction is the only thing actually worth a toast for: it isn't shown anywhere else,
+        # and it's the number that matters when comparing regression methods on the same
+        # recording. Nothing to add for a single-channel recording (no motion correction ran),
+        # so no toast at all — the plot appearing is confirmation enough.
         inlier_fraction = result.get('motion_correction_inlier_fraction')
         if inlier_fraction is not None:
             show_window_toast(
@@ -315,6 +312,4 @@ def _load_folder(ctx, folder_path):
     def _on_error(msg):
         show_error(ctx, msg)
 
-    if ctx.settings.get("background_loading"):
-        show_window_toast(ctx, "Loading TDT folder…")
-    run_in_background(ctx, _work, _on_success, _on_error)
+    run_in_background(ctx, _work, _on_success, _on_error, label="Loading TDT folder")

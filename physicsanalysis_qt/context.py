@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 
+from . import outputs
+
 _MARKER_COLORS = ["green", "red", "blue", "orange", "purple", "black"]
 
 _PHI = 1.6180339887  # golden ratio
@@ -252,6 +254,7 @@ class AppState:
         self._toast_timer = None
         self._pinned_panel = None
         self._toast_repositioner = None
+        self._progress_toast = None  # the ProgressToast of the slow action running now, if any (toasts.py)
 
         # Background loading (Options: "Load data files on a background thread")
         self._bg_thread = None
@@ -327,25 +330,55 @@ def get_export_dir(ctx):
     return ctx.settings.get("output_folder") or ctx.last_dir or ctx.settings["default_folder"]
 
 
-def export_file(ctx, parent, title, default_filename, filter_str, write_fn):
+def export_file(ctx, parent, title, default_filename, filter_str, write_fn,
+                dest_dir=None, recording_type=None, recording_source=None):
     """Saves an export (a figure image or a CSV) to disk. write_fn(path)
     does the actual writing — called once a destination is settled,
     either way below.
 
     If settings["output_folder"] is set (Options → Output Folder), saves
-    straight there with no dialog at all, just a confirmation toast —
-    that's the whole point of pinning an output folder. Otherwise prompts
-    via a save dialog seeded from get_export_dir(ctx), exactly like every
-    export already did before that setting existed. A write_fn failure
-    (bad path, permissions, ...) surfaces as an error instead of failing
-    silently either way."""
+    straight there — into a folder for the current recording's data type,
+    then one for the recording itself (outputs.recording_dir), so a
+    recording's exports accumulate together instead of piling up flat —
+    with no dialog at all, just a confirmation toast. A repeat export never
+    silently replaces the last one either way: outputs.unique_path() adds
+    " (2)", " (3)", ... to default_filename if something is already there.
+    Otherwise (no output folder set) prompts via a save dialog seeded from
+    get_export_dir(ctx), exactly like every export already did before that
+    setting existed — a native dialog already asks before replacing an
+    existing file on its own, so unique_path() isn't needed there. A
+    write_fn failure (bad path, permissions, ...) surfaces as an error
+    instead of failing silently either way.
+
+    dest_dir : an already-resolved destination folder (e.g. a group
+        analysis's own folder, see analysis/group/output.py) — used as-is,
+        with no dialog and regardless of whether Options -> Output folder
+        is set. Takes priority over everything below.
+    recording_type, recording_source : what identifies "the current
+        recording" for outputs.recording_dir, for a caller whose data
+        isn't in ctx.cache (PT2, the text field study tools — everything
+        else already has ctx.cache['source']/['source_path'] and needs
+        neither passed). Ignored if dest_dir is given.
+    """
     from PyQt6.QtWidgets import QFileDialog
 
     from .toasts import show_error, show_window_toast
 
-    output_folder = ctx.settings.get("output_folder")
-    if output_folder:
-        path = os.path.join(output_folder, default_filename)
+    if dest_dir is not None:
+        folder = dest_dir
+    else:
+        output_folder = ctx.settings.get("output_folder")
+        if not output_folder:
+            folder = None
+        elif recording_type is not None and recording_source is not None:
+            folder = outputs.recording_dir(output_folder, recording_type, recording_source)
+        elif ctx.cache is not None and ctx.cache.get("source") and ctx.cache.get("source_path"):
+            folder = outputs.recording_dir(output_folder, ctx.cache["source"], ctx.cache["source_path"])
+        else:
+            folder = output_folder
+
+    if folder is not None:
+        path = outputs.unique_path(os.path.join(folder, default_filename))
     else:
         path, _ = QFileDialog.getSaveFileName(
             parent, title, os.path.join(get_export_dir(ctx), default_filename), filter_str)

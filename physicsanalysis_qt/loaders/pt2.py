@@ -72,7 +72,8 @@ class PT2ViewerDialog(QDialog):
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         name = f"{os.path.splitext(os.path.basename(self.path))[0]}_{ts}.png"
         export_file(self.ctx, self, "Export Image", name, "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)",
-                    lambda path: self.fig2.savefig(path, dpi=300, bbox_inches='tight'))
+                    lambda path: self.fig2.savefig(path, dpi=300, bbox_inches='tight'),
+                    recording_type="PT2", recording_source=self.path)
 
 
 def launch_pt2_viewer(ctx):

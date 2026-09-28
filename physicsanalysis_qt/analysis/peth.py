@@ -88,8 +88,11 @@ def launch_zscore_peth(ctx, center_t):
     for i, r in enumerate(results):
         ax_heat, ax_line = axes[2 * i], axes[2 * i + 1]
         z_binned = pl.bin_for_heatmap(r['z_seg'])
+        # Scaled to this channel's own z-score spread rather than a fixed range, so a quiet
+        # recording isn't washed out and a big responder isn't clipped.
+        scale = np.nanpercentile(np.abs(r['z_seg']), 98) or 1.0
         ax_heat.imshow(z_binned.reshape(1, -1), aspect='auto', cmap='YlGnBu_r',
-                       extent=[-pre, post, 0, 1], vmin=-5, vmax=5, interpolation='bilinear')
+                       extent=[-pre, post, 0, 1], vmin=-scale, vmax=scale, interpolation='bilinear')
         ax_heat.set_yticks([])
         tfs, lfs, _ = fig_font_sizes(fig)
         ax_heat.set_ylabel(r['channel'], fontweight='bold', fontsize=lfs)
@@ -97,7 +100,7 @@ def launch_zscore_peth(ctx, center_t):
         ax_line.plot(r['slice_x'] - center_t, r['z_seg'], color=r['color'], linewidth=1.5)
         ax_line.axvline(0, color='red', linestyle='--', alpha=0.8)
         ax_line.set_xlim([-pre, post])
-        ax_line.set_ylim([-5, 5])
+        ax_line.set_ylim([-scale, scale])
         ax_line.set_ylabel("Z-Score", fontweight='bold', fontsize=lfs)
     axes[-1].set_xlabel("Time from Center (s)", fontweight='bold', fontsize=lfs)
 

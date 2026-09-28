@@ -91,7 +91,8 @@ class FieldStudyResultsDialog(QDialog):
         ts = datetime.datetime.now().strftime("%H%M%S")
         export_file(self.ctx, self, "Export Text Field Study Results",
                      f"TextFieldStudyResults_{ts}.csv", "CSV (*.csv);;Text (*.txt)",
-                     lambda path: self.df.to_csv(path, index=False))
+                     lambda path: self.df.to_csv(path, index=False),
+                     recording_type="Text Field Study", recording_source=self.ctx.study_data_path)
 
 
 def launch_field_study_results(ctx):

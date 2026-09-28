@@ -27,7 +27,7 @@ import PhysicsLibrary as pl
 
 from ..background import run_in_background
 from ..field_study_config import load_config, save_config
-from ..toasts import show_error, show_success, show_window_toast
+from ..toasts import show_error, show_window_toast
 from ..window_fit import scroll_body, fit_dialog_to_content
 
 
@@ -230,7 +230,7 @@ def open_field_study_folder(ctx):
 def _load_field_study_folder(ctx, folder_path, config):
     from ..analysis.text_field_study import launch_field_study_results
 
-    def _work():
+    def _work(progress):
         return pl.run_field_study_pipeline(
             folder_path,
             text_fields=config["text_fields"],
@@ -238,22 +238,21 @@ def _load_field_study_folder(ctx, folder_path, config):
             paired_fields=config.get("paired_fields"),
             file_glob=config.get("file_glob", "P-*.json"),
             min_words=config.get("min_words", 5),
+            progress=progress,
         )
 
     def _on_success(df):
         ctx.study_data = df
         ctx.study_data_path = folder_path
         ctx.study_data_config = config
-        show_success(ctx, f"Loaded {len(df)} subject(s)")
+        show_window_toast(ctx, f"Loaded {len(df)} subject(s)")
         launch_field_study_results(ctx)
 
     def _on_error(msg):
         show_error(ctx, msg)
 
-    if ctx.settings.get("background_loading"):
-        # Embedding every compared field plus a permutation null
-        # distribution is real work, unlike a quick file parse — this
-        # can take a while, especially the first run (downloads the
-        # sentence-transformers model).
-        show_window_toast(ctx, "Running text field study pipeline… this can take a while")
-    run_in_background(ctx, _work, _on_success, _on_error)
+    # Embedding every compared field plus a permutation null distribution is
+    # real work, unlike a quick file parse — this can take a while, especially
+    # the first run (downloads the sentence-transformers model), so the progress
+    # toast walks through the steps ("Loading language model", ...).
+    run_in_background(ctx, _work, _on_success, _on_error, label="Running text field study")

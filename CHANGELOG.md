@@ -2,6 +2,35 @@
 
 ---
 
+## v3.1.0
+**New: Group Analysis ("Hypothesis Testing") — compare markers across recordings**
+- Opening a folder that contains two or more TDT recordings now offers **Hypothesis Testing** alongside Single Experiment Analysis. A five-page wizard picks recordings, markers (each ticked marker is a level of one factor), the analysis window, and the measures to compute (AUC, Peak Amplitude, Mean Amplitude, Latency to Peak, Decay Time), then names the group and runs.
+- Each recording is a subject (named after its own folder), loaded and processed one at a time to bound memory; trials are every occurrence of a marker, taken the same way the single-recording Event PETH takes them. Two or more markers fit a linear mixed-effects model per measure (subject + subject×marker random intercepts) with Holm-corrected post hoc pairwise comparisons; one marker tests AUC/Mean Amplitude against zero (Peak/Latency/Decay are reported as estimates with 95% CIs, since they have no null value). Requires the new `ZaksPhysicsLibrary>=2026.9.28` (not `2026.9.27`, which crashed on two-or-more-marker analyses under `statsmodels>=0.15`).
+- Results open in a tabbed dialog: a **Report** tab (plain-text summary, Copy button) and a **Figures** tab — trial-averaged traces, a per-marker heatmap of every trial, a measures-comparison plot with significance brackets, and a model-diagnostics figure, switchable from a dropdown. Every figure is saved automatically as both PNG (300 DPI) and PDF (vector), using the Okabe-Ito colorblind-safe palette for markers and a diverging colormap for heatmaps, matching common journal figure guidelines; the Figures tab's own **Export Plot** button additionally offers SVG.
+- Output lands in `<Output folder>/Group Analysis/<group name>/` — see the output-folder changes below for what happens on a repeat run with the same name.
+
+**New: organized, collision-safe output folders**
+- With an Output folder set (Options), every export now nests as `<Output>/<data type>/<recording name> (Analysis)/` — e.g. `TDT/PFC-GCaMP-Sucrose-251222-210404 (Analysis)/AUC_142s_143059.csv` — instead of dropping every file flat into one folder. The " (Analysis)" suffix means an export folder can never be mistaken for the real recording folder/file sitting next to it. Two different recordings that happen to share a folder name are disambiguated automatically (`... (Analysis) (2)`, `(3)`, ...); reopening the same recording reuses its existing folder so exports accumulate there across sessions. With no Output folder set, behaviour is unchanged (a save dialog, seeded from the last-opened folder).
+- Exporting the same file twice never silently overwrites the first: a repeat auto-resolved export gets " (2)", " (3)", ... inserted before the extension. Group Analysis gets the equivalent at the folder level — re-running the same group name gets a freshly numbered `Group Analysis/<name> (2)/` folder instead of overwriting the previous run's tables/figures/report, so the old "Group already saved — Replace them?" prompt is gone (there is never anything left to replace).
+
+**New: progress toasts for more background work**
+- Loading a recording (TDT, Oxysoft, and now generic tabular data too), Splice's cut-out/replay/restore, Event PETH, Peak Finder, and the text-field-study/validation pipelines all show a live percentage in the same bottom-right toast used elsewhere, instead of freezing the window with no feedback.
+- Fixed a freeze after a background load finished: cleanup dropped the worker thread's last reference on the GUI thread while the worker still needed the GIL to finish shutting down. The thread is now waited on first, which releases the GIL.
+
+**Fixed: Splice's "Keep only this range" didn't recompute dF/F**
+- For TDT recordings, "Cut out this range" already re-ran motion/bleaching correction on the result; "Keep only this range" silently kept the *original* fit instead, computed from data that may no longer even be in the kept window. Both modes now re-fit dF/F on whatever raw signal survives the splice.
+
+**Fixed: Z-Score PETH and Event PETH heatmaps used a fixed ±5 color range**
+- The single-recording Z-Score PETH heatmap/trace and Event PETH's stacked-trial heatmap always colored/scaled to a hardcoded -5..5, regardless of the data (matplotlib's default tick spacing on that range lands on -4,-2,0,2,4, which read as "-4 to 4"). Both now scale to that trial's/recording's own 98th-percentile |z|, matching how the Group Analysis heatmap already worked — a quiet recording is no longer washed out and a large responder is no longer clipped.
+
+**Changed: Options' motion-correction method applies immediately**
+- Changing Regression (Options → Motion Correction) and clicking OK now reprocesses the currently loaded TDT recording right away — no separate click on the toolbar's Reload button needed. The note under the dropdown no longer says otherwise.
+
+**Changed: loading a recording no longer pops up a "Success" dialog to dismiss**
+- Opening or reloading a TDT/Oxysoft/generic-tabular recording, and opening a text field study, showed a modal "Success" popup that had to be clicked through — every time, including the new automatic reload above. It's now the same bottom-right toast used everywhere else in the app. For TDT specifically, the toast no longer names the folder at all (the plot's own title already shows it) — it shows the regression method's inlier percentage instead, the one thing not already visible anywhere, and shows nothing at all for a single-channel recording (no motion correction to report).
+
+---
+
 ## v3.0.1
 **Fixed: analysis numbers — now requires `ZaksPhysicsLibrary>=2026.9.24`**
 - Motion correction is now fitted in float64. TDT streams are float32, and on a long recording the isosbestic regression silently returned a line at roughly half the true slope (`np.polyfit` in single precision drops the slope term past ~200,000 samples, ~3 minutes at 1 kHz). That hit the **default OLS setting**; RANSAC and Huber barely changed. On a 17-minute test recording the default's peak PETH z-scores were 2-3x too large, and after the fix OLS, RANSAC and Huber agree (mean PETH traces r ≥ 0.995).

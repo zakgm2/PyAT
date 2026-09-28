@@ -268,9 +268,12 @@ class _EventPethResultsDialog(QDialog):
         fs = ctx.cache['fs']
         pre, post = self.pre, self.post
 
-        def _work():
+        def _work(progress):
+            plan = pl.Plan(progress, [("Smoothing the signal", 10), ("Aligning trials", 90)])
+            plan.begin("Smoothing the signal")
             clean_signal = pl.smooth_signal(data_source, fs)
-            return pl.compute_event_zscore_peth(time_array, clean_signal, event_times, pre, post)
+            return pl.compute_event_zscore_peth(time_array, clean_signal, event_times, pre, post,
+                                                progress=plan.sub("Aligning trials"))
 
         def _on_success(result):
             self.combo_event.setEnabled(True)
@@ -288,9 +291,7 @@ class _EventPethResultsDialog(QDialog):
             self.combo_event.setEnabled(True)
             show_error(ctx, f"Event PETH failed: {msg}")
 
-        if ctx.settings.get("background_loading"):
-            show_window_toast(ctx, f"Computing Event PETH for '{event_name}'…")
-        run_in_background(ctx, _work, _on_success, _on_error)
+        run_in_background(ctx, _work, _on_success, _on_error, label=f"Computing Event PETH for '{event_name}'")
 
     def _populate_trial_list(self, result):
         """Rebuild the trial checklist (all checked) for a freshly computed
@@ -541,10 +542,13 @@ class _EventPethResultsDialog(QDialog):
                                ha='center', va='center', transform=self.ax_heat.transAxes)
         else:
             order = self._row_order(sub_matrix)
+            # Scaled to this trial set's own spread rather than a fixed range, so a quiet
+            # recording isn't washed out and a big responder isn't clipped.
+            scale = np.nanpercentile(np.abs(sub_matrix), 98) or 1.0
             im = self.ax_heat.imshow(
                 sub_matrix[order], aspect='auto', cmap='YlGnBu_r',
                 extent=[-self.pre, self.post, n_selected, 0],
-                vmin=-5, vmax=5, interpolation='nearest',
+                vmin=-scale, vmax=scale, interpolation='nearest',
             )
             self._colorbar = self.fig.colorbar(im, ax=self.ax_heat, fraction=0.046, pad=0.04, label="Z-score")
 
