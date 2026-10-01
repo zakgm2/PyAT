@@ -13,15 +13,16 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.widgets import RectangleSelector
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices
+from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QStatusBar, QStackedWidget,
     QToolButton,
 )
 
 from .. import interaction
+from .. import undo
 from ..pg_engine import build_pg_widget, sync_pg_margins
-from ..toasts import show_window_toast
+from ..toasts import show_error, show_window_toast
 from ..update_check import local_version
 from ..vispy_engine import build_vispy_widget, sync_vispy_margins
 from ..window_fit import fit_to_screen
@@ -156,7 +157,24 @@ def build_main_window(ctx):
     ctx.status_bar.addPermanentWidget(_build_citation_button(ctx))
     ctx.status_bar.addPermanentWidget(_build_feedback_button())
 
+    # Ctrl+Z: undoes the last marker/splice edit (undo.py), one step at a time — not a general
+    # app-wide undo (Edit Attributes, Options, plot engine, etc. are untouched by it). Default
+    # WindowShortcut context: a focused QLineEdit's own built-in text-undo still consumes Ctrl+Z
+    # first, so this only fires when nothing is mid-edit.
+    shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), ctx.win)
+    shortcut_undo.activated.connect(lambda: _undo_last_action(ctx))
+
     return ctx.win
+
+
+def _undo_last_action(ctx):
+    if ctx.cache is None:
+        return
+    label = undo.undo(ctx)
+    if label is None:
+        show_error(ctx, "Nothing to undo.")
+    else:
+        show_window_toast(ctx, f"Undid: {label}")
 
 
 def _build_coffee_button():

@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QFileDialog
 import PhysicsLibrary as pl
 
 from ..background import run_in_background
-from ..sidecar import load_markers_from_sidecar
+from ..sidecar import load_markers_from_sidecar, load_highlights_from_sidecar, load_text_annotations_from_sidecar
 from ..analysis.splice import load_splice_from_sidecar
 from ..plot_signal import refresh_plot_signal_options
 from ..toasts import show_error, show_window_toast
@@ -75,6 +75,8 @@ def _load_single_file(ctx, file_path):
         # identical ordering and its comment for why.
         load_splice_from_sidecar(ctx)
         load_markers_from_sidecar(ctx)
+        load_highlights_from_sidecar(ctx)
+        load_text_annotations_from_sidecar(ctx)
         refresh_plot_signal_options(ctx)  # no 'signals' map here — hides the Plot dropdown
         simple_plot(ctx)
         show_window_toast(ctx, f"File: {os.path.basename(file_path)}")

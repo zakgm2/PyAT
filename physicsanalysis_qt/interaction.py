@@ -90,6 +90,30 @@ def _text_hit(fig, artist, px, py):
     return bbox.contains(px, py)
 
 
+def _hit_marker_label(ctx, event):
+    """The marker dict whose label text the click landed on (see
+    plotting._update_plot_with_notes, which tracks every (marker, Text artist) pair it drew in
+    ctx._marker_label_artists), or None. An unnamed marker has no label artist at all, so it can
+    never be dragged this way — nothing to drag."""
+    if event.x is None or event.y is None:
+        return None
+    for marker, artist in reversed(ctx._marker_label_artists):
+        if _text_hit(ctx.fig, artist, event.x, event.y):
+            return marker
+    return None
+
+
+def _hit_text_annotation(ctx, event):
+    """The text-annotation dict the click landed on (see plotting._draw_text_annotations /
+    ctx._text_annotation_artists), or None."""
+    if event.x is None or event.y is None:
+        return None
+    for annotation, artist in reversed(ctx._text_annotation_artists):
+        if _text_hit(ctx.fig, artist, event.x, event.y):
+            return annotation
+    return None
+
+
 def _rename_legend_entry(ctx, current_label, new_label):
     plot_attrs = ctx.plot_attrs
     saved_entry_map = {orig: (new, vis) for orig, new, vis in (plot_attrs["leg_entries"] or [])}
@@ -176,6 +200,27 @@ def on_press(ctx, event):
         analysis_type(ctx, event.xdata)
         return
 
+    # Text mode: left-click places a text box there (asks for content/font size via dialog),
+    # nothing else — right-click still works for drag/delete on an existing one, below.
+    # place_text_annotation blocks on a modal QDialog while still inside this press handler —
+    # same RectangleSelector-desync issue analysis_type() has (see its own comment for the full
+    # explanation): deactivate it first since its handler for this same press hasn't fired yet
+    # (callbacks run in registration order, ours first), and reactivate on the next Qt tick, not
+    # synchronously here, or it would start a fresh drag with no release left to end it.
+    if ctx.text_mode:
+        if (event.button == 1 and not event.dblclick
+                and event.xdata is not None and event.ydata is not None):
+            from .analysis.text_annotation import place_text_annotation
+            ctx.rect_selector.set_active(False)
+            try:
+                place_text_annotation(ctx, event.xdata, event.ydata)
+            finally:
+                def _reactivate():
+                    ctx.rect_selector.clear()
+                    ctx.rect_selector.set_active(True)
+                QTimer.singleShot(0, _reactivate)
+        return
+
     # Marker mode: left-click places, right-click edits, nothing else
     if ctx.marker_mode:
         if event.button == 1 and not event.dblclick and event.xdata is not None:
@@ -184,15 +229,45 @@ def on_press(ctx, event):
             right_click_marker_menu(ctx, event.xdata, QCursor.pos(), _marker_hit_tolerance(ctx))
         return
 
-    # Right-click: marker context menu if near one, else pan
+    # Highlighter mode: left-click captures a point, same drag-detection pattern as Curve
+    # Fit/Splice below — the actual highlight is created in on_release once there are two.
+    if ctx.highlight_click_mode:
+        if event.button == 1 and not event.dblclick:
+            ctx.press_x, ctx.press_y = event.x, event.y
+        return
+
+    # Right-click: drag or delete a text annotation if the click landed on one, else drag a
+    # marker's label if it landed on one, else the marker context menu if near one, else delete
+    # a highlight if inside one, else pan. Checked in that order — most specific/smallest target
+    # first, "is this anywhere inside a wide highlight span" last.
     if event.button == 3:
+        text_hit = _hit_text_annotation(ctx, event)
+        if text_hit is not None:
+            from . import undo
+            ctx._dragging_text = text_hit
+            ctx._dragging_text_before = undo.snapshot(ctx)
+            ctx.press_x, ctx.press_y = event.x, event.y  # on_release tells a hold-drag from a plain click by this
+            return
+        hit = _hit_marker_label(ctx, event)
+        if hit is not None:
+            from . import undo
+            ctx._dragging_label = hit
+            ctx._dragging_label_before = undo.snapshot(ctx)
+            return
         tol_s = _marker_hit_tolerance(ctx)
         if event.xdata is not None and find_nearest_marker(ctx, event.xdata, tol_s) is not None:
             right_click_marker_menu(ctx, event.xdata, QCursor.pos(), tol_s)
-        else:
-            ctx.is_dragging = True
-            ctx.press_x, ctx.press_y = event.x, event.y
-            ctx._last_pan_draw_time = 0.0
+            return
+        if event.xdata is not None:
+            from .analysis.highlight import find_highlight_at, delete_highlight
+            highlight = find_highlight_at(ctx, event.xdata)
+            if highlight is not None:
+                delete_highlight(ctx, highlight)
+                show_window_toast(ctx, "Highlight deleted")
+                return
+        ctx.is_dragging = True
+        ctx.press_x, ctx.press_y = event.x, event.y
+        ctx._last_pan_draw_time = 0.0
         return
 
     # Curve Fit mode: record mouse-down pixel position for drag detection
@@ -225,6 +300,34 @@ def on_press(ctx, event):
 
 def on_motion(ctx, event):
     ax, canvas, fig = ctx.ax, ctx.canvas, ctx.fig
+
+    # -1. Dragging a text annotation (right-click-and-hold on one, see _hit_text_annotation in
+    # on_press) — free 2D movement, not constrained to a line the way a marker label is.
+    if ctx._dragging_text is not None:
+        if event.xdata is not None and event.ydata is not None:
+            annotation = ctx._dragging_text
+            annotation['x'], annotation['y'] = event.xdata, event.ydata
+            for a, artist in ctx._text_annotation_artists:
+                if a is annotation:
+                    artist.set_position((event.xdata, event.ydata))
+                    canvas.draw_idle()
+                    break
+        return
+
+    # 0. Dragging a marker's label (right-click-and-hold on one, see _hit_marker_label in
+    # on_press) — moves just that label up/down the marker's own line, not the whole view.
+    if ctx._dragging_label is not None:
+        if event.y is not None:
+            marker = ctx._dragging_label
+            frac = min(1.0, max(0.0, ax.transAxes.inverted().transform((event.x, event.y))[1]))
+            marker['label_y'] = frac
+            for m, artist in ctx._marker_label_artists:
+                if m is marker:
+                    artist.set_position((marker['time'], frac))
+                    artist.set_va('top' if frac > 0.5 else 'bottom')
+                    canvas.draw_idle()
+                    break
+        return
 
     # 1. Panning (right-click drag)
     if ctx.is_dragging and event.inaxes == ax and event.x is not None:
@@ -384,6 +487,42 @@ def _schedule_hover_bg_refresh(ctx, delay_ms=150):
 def on_release(ctx, event):
     from .analysis.curve_fit import launch_curve_fit
 
+    if ctx._dragging_text is not None:
+        annotation = ctx._dragging_text
+        before = ctx._dragging_text_before
+        ctx._dragging_text = None
+        ctx._dragging_text_before = None
+        dx = abs(event.x - ctx.press_x) if ctx.press_x is not None and event.x is not None else 999
+        dy = abs(event.y - ctx.press_y) if ctx.press_y is not None and event.y is not None else 999
+        if dx <= 5 and dy <= 5:
+            # A plain right-click, not a hold-and-drag — delete instead (any imperceptible
+            # sub-5px position nudge from the hold is moot, it's about to be removed anyway).
+            from .analysis.text_annotation import delete_text_annotation
+            delete_text_annotation(ctx, annotation)
+            show_window_toast(ctx, "Text box deleted")
+        else:
+            from . import undo
+            undo.push(ctx, "moved a text box", before)
+            # A plain draw() isn't enough on its own: the hover tracker's blit cache
+            # (ctx._hover_bg, captured by _refresh_hover_bg) still holds the OLD canvas image
+            # from before the drag, and the very next mouse-move pastes that straight back over
+            # whatever was just drawn (restore_region in on_motion's hover section below) —
+            # which is what made the new position look like it "snapped back" until some later,
+            # unrelated redraw happened to recapture the background. _refresh_hover_bg both
+            # forces the repaint and recaptures that cache, same as panning already does after
+            # its own drag (see `was_dragging` below).
+            _refresh_hover_bg(ctx)
+            show_window_toast(ctx, "Text box moved")
+        return
+
+    if ctx._dragging_label is not None:
+        from . import undo
+        undo.push(ctx, "moved a marker label", ctx._dragging_label_before)
+        ctx._dragging_label = None
+        ctx._dragging_label_before = None
+        _refresh_hover_bg(ctx)  # same stale-blit-cache reasoning as the text-drag case above
+        return
+
     was_dragging = ctx.is_dragging
     ctx.is_dragging = False
     if was_dragging:
@@ -459,6 +598,20 @@ def on_release(ctx, event):
             t1, t2 = ctx.slope_clicks
             ctx.slope_clicks.clear()
             apply_splice_at_points(ctx, t1, t2)
+        return
+
+    if (ctx.highlight_click_mode
+            and event.button == 1
+            and event.inaxes == ctx.ax
+            and event.xdata is not None):
+        from .analysis.highlight import apply_highlight_at_point
+
+        dx = abs(event.x - ctx.press_x) if ctx.press_x is not None else 999
+        dy = abs(event.y - ctx.press_y) if ctx.press_y is not None else 999
+        if dx > 5 or dy > 5:
+            return
+
+        apply_highlight_at_point(ctx, event.xdata)
 
 
 def zoom_factory(ctx, base_scale=1.2):

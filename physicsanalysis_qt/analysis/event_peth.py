@@ -119,6 +119,18 @@ class _EventPethResultsDialog(QDialog):
         top_row.addWidget(self.sort_combo)
         layout.addLayout(top_row)
 
+        # Figure title — defaults to "Event PETH — {event}" and tracks the event picker until the
+        # user types their own; from then on it's left alone (even across event switches/
+        # Recalculate), the same "typed text wins" convention as Edit Attributes' own title field.
+        title_row = QHBoxLayout()
+        title_row.addWidget(QLabel("Title:"))
+        self.e_title = QLineEdit(f"Event PETH — {initial_event_name}")
+        self._title_user_edited = False
+        self.e_title.textEdited.connect(lambda: setattr(self, "_title_user_edited", True))
+        self.e_title.editingFinished.connect(self._redraw)
+        title_row.addWidget(self.e_title, stretch=1)
+        layout.addLayout(title_row)
+
         window_row = QHBoxLayout()
         window_row.addWidget(QLabel("Window — pre (s):"))
         self.e_pre = QLineEdit(str(int(ctx.window_pre or get_window(ctx)[0])))
@@ -254,6 +266,8 @@ class _EventPethResultsDialog(QDialog):
         ctx = self.ctx
         self.event_name = event_name
         self.combo_event.setEnabled(False)
+        if not self._title_user_edited:
+            self.e_title.setText(f"Event PETH — {event_name}")
 
         event_times = self.groups[event_name]
         self.pre, self.post = self._read_window()
@@ -602,7 +616,7 @@ class _EventPethResultsDialog(QDialog):
             # identified via the trial list on the right instead.
             self.ax_line.legend(fontsize=lfs * 0.8, loc='upper right')
 
-        self.fig.suptitle(f"Event PETH — {self.event_name}", fontsize=tfs, fontweight='bold')
+        self.fig.suptitle(self.e_title.text() or f"Event PETH — {self.event_name}", fontsize=tfs, fontweight='bold')
         self.fig.tight_layout(rect=[0, 0, 1, 0.96])
         self.canvas.draw_idle()
 

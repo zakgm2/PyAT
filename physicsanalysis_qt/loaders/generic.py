@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 import PhysicsLibrary as pl
 
 from ..background import run_in_background
-from ..sidecar import load_markers_from_sidecar
+from ..sidecar import load_markers_from_sidecar, load_highlights_from_sidecar, load_text_annotations_from_sidecar
 from ..analysis.splice import load_splice_from_sidecar
 from ..plot_signal import refresh_plot_signal_options
 from ..toasts import show_error, show_window_toast
@@ -148,6 +148,8 @@ class GenericLoaderDialog(QDialog):
         # identical ordering and its comment for why.
         load_splice_from_sidecar(self.ctx)
         load_markers_from_sidecar(self.ctx)
+        load_highlights_from_sidecar(self.ctx)
+        load_text_annotations_from_sidecar(self.ctx)
         refresh_plot_signal_options(self.ctx)  # no 'signals' map here — hides the Plot dropdown
         self.accept()
         simple_plot(self.ctx)

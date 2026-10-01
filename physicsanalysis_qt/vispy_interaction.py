@@ -274,6 +274,7 @@ def _right_click_marker_menu(ctx, xdata, global_pos, tol_s=2.0):
     from .marker_labels import marker_display_label
     from .markers import delete_all_same_name
     from .toasts import show_success
+    from . import undo
 
     idx = find_nearest_marker(ctx, xdata, tol_s)
     if idx is None:
@@ -291,9 +292,13 @@ def _right_click_marker_menu(ctx, xdata, global_pos, tol_s=2.0):
         if open_edit_marker_dialog(ctx, marker):
             vispy_simple_plot(ctx)
     elif chosen == act_delete:
+        before = undo.snapshot(ctx)
         ctx.cache['markers'].pop(idx)
+        undo.push(ctx, "deleted a marker", before)
         vispy_simple_plot(ctx)
     elif chosen == act_delete_all:
+        before = undo.snapshot(ctx)
         removed = delete_all_same_name(ctx, marker)
+        undo.push(ctx, f"deleted {removed} marker(s)", before)
         vispy_simple_plot(ctx)
         show_success(ctx, f"Deleted {removed} '{name}' marker(s)")
