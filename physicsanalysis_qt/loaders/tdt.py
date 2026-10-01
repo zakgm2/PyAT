@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 import PhysicsLibrary as pl
 
 from ..background import run_in_background
-from ..sidecar import load_markers_from_sidecar
+from ..sidecar import load_markers_from_sidecar, load_highlights_from_sidecar, load_text_annotations_from_sidecar
 from ..analysis.splice import load_splice_from_sidecar
 from ..plot_signal import refresh_plot_signal_options
 from ..toasts import show_error, show_window_toast
@@ -295,6 +295,8 @@ def _load_folder(ctx, folder_path):
         # reinterpreted as if it were on the original, unspliced timeline).
         load_splice_from_sidecar(ctx)
         load_markers_from_sidecar(ctx)
+        load_highlights_from_sidecar(ctx)
+        load_text_annotations_from_sidecar(ctx)
         refresh_plot_signal_options(ctx)
         simple_plot(ctx)
         # No "Folder: X" here — the plot's own title already shows the store name (see

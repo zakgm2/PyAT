@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
 import PhysicsLibrary as pl
 
+from . import undo
 from .context import _MARKER_COLORS
 from .marker_labels import store_display_name
 from .toasts import show_error, show_success, show_window_toast
@@ -93,7 +94,7 @@ class MarkerDialog(QDialog):
         self.accept()
 
     def values(self):
-        label = self.e_name.text().strip() or "Marker"
+        label = self.e_name.text().strip()  # "" is allowed — an unnamed marker, just a tick
         checked = self.color_group.checkedButton()
         color = checked.text() if checked else "green"
         try:
@@ -381,6 +382,7 @@ class AddMarkerDialog(QDialog):
 
         l2.addWidget(QLabel("Marker name:"), 0, 0)
         self.e_name = QLineEdit(stamp["label"])
+        self.e_name.setPlaceholderText("(blank = unnamed, just a tick)")
         self.e_name.selectAll()
         l2.addWidget(self.e_name, 0, 1)
 
@@ -451,7 +453,9 @@ class AddMarkerDialog(QDialog):
         """Connected to store_renamed for a standalone rename (Enter/focus-
         loss with nothing else happening) — this is the only path that
         redraws/toasts for the rename by itself."""
+        before = undo.snapshot(self.ctx)
         self._apply_store_rename(item, new_name)
+        undo.push(self.ctx, f"renamed a store to '{new_name}'", before)
         if self.ctx.cache is not None:
             from .plotting import simple_plot
             simple_plot(self.ctx)
@@ -468,12 +472,14 @@ class AddMarkerDialog(QDialog):
                 from .plotting import simple_plot
                 simple_plot(self.ctx)
             return
+        before = undo.snapshot(self.ctx)
         reset_count = 0
         for item in selected_items:
             store_id = item.data(Qt.ItemDataRole.UserRole)
             if self.ctx.store_labels.pop(store_id, None) is not None:
                 reset_count += 1
             item.setText(store_id)
+        undo.push(self.ctx, f"reset {reset_count} store name(s)", before)
         if self.ctx.cache is not None:
             from .plotting import simple_plot
             simple_plot(self.ctx)
@@ -523,7 +529,9 @@ class AddMarkerDialog(QDialog):
             to_add = self._debounce_markers(to_add, min_isi)
             debounced_out = before - len(to_add)
 
+        before = undo.snapshot(self.ctx)
         self.ctx.cache['markers'].extend(to_add)
+        undo.push(self.ctx, f"added {len(to_add)} marker(s)", before)
         from .plotting import simple_plot
         simple_plot(self.ctx)
         msg = f"Added {len(to_add)} marker(s) from {len(selected_stores)} store(s)"
@@ -569,10 +577,12 @@ class AddMarkerDialog(QDialog):
                 from .plotting import simple_plot
                 simple_plot(self.ctx)
             return
-        before = len(self.ctx.cache['markers'])
+        before_snap = undo.snapshot(self.ctx)
+        before_n = len(self.ctx.cache['markers'])
         self.ctx.cache['markers'] = [m for m in self.ctx.cache['markers']
                                       if _bulk_group_key(m) not in selected_stores]
-        removed = before - len(self.ctx.cache['markers'])
+        removed = before_n - len(self.ctx.cache['markers'])
+        undo.push(self.ctx, f"removed {removed} marker(s)", before_snap)
         from .plotting import simple_plot
         simple_plot(self.ctx)
         show_success(self.ctx, f"Removed {removed} marker(s) from "
@@ -590,8 +600,10 @@ class AddMarkerDialog(QDialog):
             return
         indices = sorted((item.data(Qt.ItemDataRole.UserRole) for item in selected_items),
                           reverse=True)
+        before = undo.snapshot(self.ctx)
         for i in indices:
             self.ctx.cache['markers'].pop(i)
+        undo.push(self.ctx, f"removed {len(indices)} marker(s)", before)
         from .plotting import simple_plot
         simple_plot(self.ctx)
         show_success(self.ctx, f"Removed {len(indices)} marker(s)")
@@ -606,7 +618,7 @@ class AddMarkerDialog(QDialog):
         if renamed and self.ctx.cache is not None:
             from .plotting import simple_plot
             simple_plot(self.ctx)
-        label = self.e_name.text().strip() or "Marker"
+        label = self.e_name.text().strip()  # "" is allowed — an unnamed marker, just a tick
         checked = self.color_group.checkedButton()
         color = checked.text() if checked else "green"
         try:
@@ -655,7 +667,9 @@ def place_marker(ctx, t):
     from .plotting import simple_plot
     if ctx.cache is None:
         return
+    before = undo.snapshot(ctx)
     ctx.cache['markers'].append({"time": t, **ctx.marker_stamp})
+    undo.push(ctx, "placed a marker", before)
     simple_plot(ctx)
 
 
@@ -707,11 +721,14 @@ def open_edit_marker_dialog(ctx, marker):
                         marker.get('color', 'green'), marker.get('fontsize', 8),
                         store_id=store_id)
     if dlg.exec() == QDialog.DialogCode.Accepted:
+        before = undo.snapshot(ctx)
         if dlg.reset_requested:
             ctx.store_labels.pop(store_id, None)
+            undo.push(ctx, "reset a store name", before)
             return True
         label, color, fontsize = dlg.values()
         apply_marker_edit(ctx, marker, label, color, fontsize, dlg.apply_to_all())
+        undo.push(ctx, "renamed a marker", before)
         return True
     return False
 
@@ -758,9 +775,13 @@ def right_click_marker_menu(ctx, xdata, global_pos, tol_s=2.0):
         if open_edit_marker_dialog(ctx, marker):
             simple_plot(ctx)
     elif chosen == act_delete:
+        before = undo.snapshot(ctx)
         ctx.cache['markers'].pop(idx)
+        undo.push(ctx, "deleted a marker", before)
         simple_plot(ctx)
     elif chosen == act_delete_all:
+        before = undo.snapshot(ctx)
         removed = delete_all_same_name(ctx, marker)
+        undo.push(ctx, f"deleted {removed} marker(s)", before)
         simple_plot(ctx)
         show_success(ctx, f"Deleted {removed} '{name}' marker(s)")

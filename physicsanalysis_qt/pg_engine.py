@@ -28,7 +28,7 @@ from PyQt6.QtCore import Qt
 
 import PhysicsLibrary as pl
 
-from .context import export_file, get_active_signal, trace_color
+from .context import export_file, get_active_signal, get_checked_signals, trace_color
 from .fonts import scaled_plot_font_sizes
 from .pg_interaction import on_pg_mouse_moved, on_pg_mouse_clicked
 from .toasts import show_error
@@ -37,9 +37,69 @@ from .toasts import show_error
 class _PanZoomViewBox(pg.ViewBox):
     """Left-drag = rectangle zoom (pyqtgraph's own RectMode default).
     Right-drag = simple pan, to match the matplotlib engine's mouse
-    mapping instead of pyqtgraph's default (right-drag scales)."""
+    mapping instead of pyqtgraph's default (right-drag scales) — UNLESS
+    the drag starts on a marker's label, in which case it moves the label
+    up/down its line instead (see _hit_marker_label_pg). InfLineLabel has
+    its own built-in dragging, but only for the left button, which this
+    app already uses for placing/selecting — so that's driven manually
+    here instead of turning movable=True on, to stay on the right button
+    the matplotlib engine also uses for this (see interaction.py)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ctx = None
+        self._dragging_label_item = None
+        self._dragging_text_item = None
 
     def mouseDragEvent(self, ev, axis=None):
+        ctx = self._ctx
+        if ctx is not None and ev.button() == Qt.MouseButton.RightButton:
+            from .pg_interaction import _hit_marker_label_pg, _hit_text_annotation_pg
+            if ev.isStart():
+                view_pos = self.mapToView(ev.buttonDownPos())
+                self._dragging_text_item = _hit_text_annotation_pg(ctx, view_pos.x(), view_pos.y())
+                if self._dragging_text_item is not None:
+                    from . import undo
+                    ctx._dragging_text = self._dragging_text_item[0]
+                    ctx._dragging_text_before = undo.snapshot(ctx)
+                else:
+                    self._dragging_label_item = _hit_marker_label_pg(ctx, view_pos.x(), view_pos.y())
+                    if self._dragging_label_item is not None:
+                        from . import undo
+                        ctx._dragging_label = self._dragging_label_item
+                        ctx._dragging_label_before = undo.snapshot(ctx)
+
+            if self._dragging_text_item is not None:
+                ev.accept()
+                annotation, item = self._dragging_text_item
+                view_pos = self.mapToView(ev.pos())
+                annotation['x'], annotation['y'] = view_pos.x(), view_pos.y()
+                item.setPos(view_pos.x(), view_pos.y())
+                if ev.isFinish():
+                    from . import undo
+                    undo.push(ctx, "moved a text box", ctx._dragging_text_before)
+                    ctx._dragging_text = None
+                    ctx._dragging_text_before = None
+                    self._dragging_text_item = None
+                return
+
+            if self._dragging_label_item is not None:
+                ev.accept()
+                marker, line = self._dragging_label_item
+                view_pos = self.mapToView(ev.pos())
+                (_, _), (y0, y1) = self.viewRange()
+                frac = min(1.0, max(0.0, (view_pos.y() - y0) / (y1 - y0))) if y1 != y0 else 0.5
+                marker['label_y'] = frac
+                if line.label is not None:
+                    line.label.setPosition(frac)
+                if ev.isFinish():
+                    from . import undo
+                    undo.push(ctx, "moved a marker label", ctx._dragging_label_before)
+                    ctx._dragging_label = None
+                    ctx._dragging_label_before = None
+                    self._dragging_label_item = None
+                return
+
         if ev.button() == Qt.MouseButton.RightButton:
             ev.accept()
             tr = self.childGroup.transform()
@@ -55,6 +115,7 @@ def build_pg_widget(ctx):
     vb = _PanZoomViewBox()
     vb.setMouseMode(pg.ViewBox.RectMode)
     vb.setMenuEnabled(False)  # we implement our own right-click marker menu
+    vb._ctx = ctx  # see _PanZoomViewBox.mouseDragEvent's marker-label-drag handling
 
     widget = pg.PlotWidget(viewBox=vb)
     widget.setBackground('w')
@@ -279,10 +340,11 @@ def _pg_simple_plot_impl(ctx, cache, plot_item, zoom_key, is_new_dataset, prev_r
             _add_line(x[mask], y[mask], _GEN_COLORS[i % len(_GEN_COLORS)], 2, col_name)
         y_label, title = "Value", cache['store']
         x_label = cache.get('x_label', 'X')
-    elif cache.get('source') == 'TDT' and ctx.plot_signal == 'overlay_all':
-        for key, sig in cache['signals'].items():
+    elif cache.get('source') == 'TDT' and len(ctx.plot_signals) > 1:
+        checked = get_checked_signals(ctx)
+        for key, sig in checked:
             _add_line(cache['x'], sig['y'], sig['color'], 1, sig['label'], alpha=0.8)
-        y_label, title = "Amplitude", f"Overlay — {cache['store']}"
+        y_label, title = "Amplitude", f"Overlay ({len(checked)}) — {cache['store']}"
         x_label = "Time (s)"
     else:
         _, label_text, data_to_plot, color = get_active_signal(ctx)
@@ -291,14 +353,44 @@ def _pg_simple_plot_impl(ctx, cache, plot_item, zoom_key, is_new_dataset, prev_r
         x_label = "Time (s)"
 
     from .marker_labels import marker_display_label
+    ctx._marker_label_lines = []  # (marker dict, InfiniteLine) with a label — drag hit-testing
     for m in cache['markers']:
+        text = marker_display_label(ctx, m)
+        kwargs = {}
+        if text:
+            # 'position': fraction along the line, 0 (bottom) to 1 (top) — draggable, see
+            # interaction.py's right-click-and-hold label-drag handling.
+            kwargs["label"] = text
+            kwargs["labelOpts"] = {'position': m.get('label_y', 0.95), 'color': m['color'],
+                                    'rotateAxis': (1, 0)}
         line = pg.InfiniteLine(
             pos=m['time'], angle=90, movable=False,
             pen=pg.mkPen(color=m['color'], width=2, style=Qt.PenStyle.DashLine),
-            label=marker_display_label(ctx, m),
-            labelOpts={'position': 0.95, 'color': m['color'], 'rotateAxis': (1, 0)},
+            **kwargs,
         )
         plot_item.addItem(line)
+        if text:
+            ctx._marker_label_lines.append((m, line))
+
+    for h in cache.get('highlights', []):
+        from .analysis.highlight import HIGHLIGHT_ALPHA
+        color = pg.mkColor(h['color'])
+        color.setAlphaF(HIGHLIGHT_ALPHA)
+        region = pg.LinearRegionItem(values=(h['start'], h['end']), movable=False,
+                                      brush=pg.mkBrush(color), pen=pg.mkPen(None))
+        region.setZValue(-10)
+        plot_item.addItem(region)
+
+    ctx._text_annotation_items = []  # (annotation dict, TextItem) — drag/delete hit-testing
+    for t in cache.get('text_annotations', []):
+        item = pg.TextItem(text=t['text'], color='k', anchor=(0, 1))
+        font = item.textItem.font()
+        font.setPointSize(t.get('fontsize', 10))
+        item.textItem.setFont(font)
+        item.setPos(t['x'], t['y'])
+        item.setZValue(5)
+        plot_item.addItem(item)
+        ctx._text_annotation_items.append((t, item))
 
     ctx._legend_entries = raw_names
     ctx._last_title = title

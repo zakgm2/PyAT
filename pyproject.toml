@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PhysicsAnalysisGUI"
-version = "3.1.0"
+version = "3.2.0"
 description = "Desktop GUI for loading, visualising, and analysing physics lab data (TDT, Oxysoft, generic tabular, EFNMR/.pt2) and text field studies"
 requires-python = ">=3.10"
 readme = "README.md"

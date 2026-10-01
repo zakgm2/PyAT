@@ -141,6 +141,9 @@ class AppState:
         # recording). What save_splice() (analysis/splice.py) writes to
         # the JSON saves/ sidecar. Empty when no splice is active.
         self._active_splices = []
+        # Ctrl+Z stack (undo.py) — one snapshot per marker/splice-mutating action, most recent
+        # last. Popped and restored wholesale by undo.undo(), not a bespoke inverse per action.
+        self._undo_stack = []
         # Set by analysis/splice.py's start_splice_flow() while the user
         # is choosing what kind of splice, read by apply_splice_at_points().
         self._pending_splice_mode = None
@@ -160,8 +163,14 @@ class AppState:
         # previous dataset's selection (e.g. "isosbestic") never silently
         # carries over to one that doesn't have that channel.
         self.plot_signal = "normalized"
-        self.plot_signal_row = None     # QWidget row wrapping the combo below
-        self.plot_signal_combo = None   # toolbar "Plot:" dropdown, see plot_signal.py
+        # Which cache['signals'] entries are ticked in the toolbar's Plot dropdown — the main
+        # plot overlays all of them at once (one line each) when there's more than one; analysis
+        # tools still go through plot_signal (above) alone, see get_active_signal()'s docstring.
+        self.plot_signals = {"normalized"}
+        self.plot_signal_row = None          # QWidget row wrapping the dropdown button below
+        self.plot_signal_button = None       # toolbar "Plot:" dropdown button, see plot_signal.py
+        self.plot_signal_menu = None         # the button's QMenu of checkboxes
+        self.plot_signal_checkboxes = {}     # {key: QCheckBox}, inside plot_signal_menu
         self.show_grid = True
         self.plot_attrs = default_plot_attrs()
 
@@ -217,6 +226,27 @@ class AppState:
         # systems don't fight over the same canvas region.
         self._rect_dragging = False
         self._last_pan_draw_time = 0.0
+        # Right-click-and-hold on a marker's label (matplotlib: interaction.py; PyQtGraph:
+        # pg_interaction.py) — moves just that label up/down the marker's own line. None when no
+        # drag is in progress; the marker dict being dragged while one is.
+        self._dragging_label = None
+        self._dragging_label_before = None  # undo.snapshot() taken at drag-start
+        self._marker_label_artists = []  # matplotlib: (marker dict, Text artist), see plotting.py
+        self._marker_label_lines = []    # PyQtGraph: (marker dict, InfiniteLine), see pg_engine.py
+
+        # Highlighter tool (analysis/highlight.py) — click-to-arm two-click flow, same shape as
+        # Splice's own splice_click_mode/_pending_splice_mode below.
+        self.highlight_click_mode = False
+        self._pending_highlight_color = None
+
+        # Text tool (analysis/text_annotation.py) — click-to-place, then right-click-and-hold to
+        # drag an existing one, or a plain right-click (no hold) to delete it.
+        self.text_mode = False
+        self.btn_text_tool = None  # toolbar icon button, see ui/edit_toolbar.py
+        self._dragging_text = None         # the annotation dict being dragged, or None
+        self._dragging_text_before = None  # undo.snapshot() taken at drag-start
+        self._text_annotation_artists = []  # matplotlib: (annotation dict, Text artist)
+        self._text_annotation_items = []    # PyQtGraph: (annotation dict, pg.TextItem)
 
         # Decimation: (line, full_x, full_y) for every plotted trace, so its
         # rendered vertex count can be kept bounded to the visible pixel
@@ -275,9 +305,12 @@ def trace_color(ctx, key, default):
 
 
 def get_active_signal(ctx):
-    """Resolve which signal the main plot (and every TDT-only analysis
-    dialog — FFT, Z-Score PETH, Event PETH, Peak Finder) should currently
-    use, as (key, label, y, color).
+    """Resolve the single "primary" signal — ctx.plot_signal — that every TDT-only analysis
+    dialog (AUC, FFT, Curve Fit, Z-Score PETH) works on, as (key, label, y, color). The main
+    plot's toolbar row can have several boxes ticked at once for overlay display (see
+    get_checked_signals below), but an analysis tool still needs exactly one signal to run
+    against — ctx.plot_signal tracks whichever was checked/clicked most recently, so it's always
+    the one you were most recently looking at, ticked or not.
 
     cache['signals'] is a dict built by the loader (see loaders/tdt.py)
     mapping a plot-option key ("normalized", "isosbestic", "main_driver",
@@ -296,6 +329,22 @@ def get_active_signal(ctx):
     key = ctx.plot_signal if ctx.plot_signal in signals else next(iter(signals))
     sig = signals[key]
     return key, sig['label'], sig['y'], sig['color']
+
+
+def get_checked_signals(ctx):
+    """The TDT plot signals currently ticked in the toolbar's Plot row, in cache['signals']
+    order, as [(key, {"label", "y", "color"}), ...] — what the main plot draws, one line each.
+    Falls back to [get_active_signal's key] if somehow nothing is ticked (the UI itself always
+    keeps at least one box checked), so a caller never ends up drawing nothing at all."""
+    cache = ctx.cache
+    signals = cache.get('signals') if cache else None
+    if not signals:
+        return []
+    checked = ctx.plot_signals & signals.keys()
+    if not checked:
+        key = ctx.plot_signal if ctx.plot_signal in signals else next(iter(signals))
+        checked = {key}
+    return [(key, sig) for key, sig in signals.items() if key in checked]
 
 
 def get_normalized_signal(ctx):

@@ -11,7 +11,7 @@ import matplotlib.transforms as transforms
 
 import PhysicsLibrary as pl
 
-from .context import export_file, get_active_signal, trace_color
+from .context import export_file, get_active_signal, get_checked_signals, trace_color
 from .fonts import main_plot_scale
 from .theme import mpl_colors
 from .toasts import show_error
@@ -93,15 +93,40 @@ def _update_plot_with_notes(ctx, markers):
 
     trans = transforms.blended_transform_factory(ctx.ax.transData, ctx.ax.transAxes)
     unique_labels = set()
+    ctx._marker_label_artists = []  # (marker dict, Text artist) — right-click-drag hit-testing
     for m in markers:
         text = marker_display_label(ctx, m)
         label_id = text if text not in unique_labels else "_nolegend_"
         unique_labels.add(text)
         ctx.ax.axvline(x=m['time'], color=m['color'], linestyle='--', alpha=0.6, label=label_id)
-        ctx.ax.text(m['time'], 0.98, f" {text}", transform=trans,
-                     rotation=90, va='top', clip_on=True, fontsize=m.get('fontsize', 8),
-                     color=m['color'], fontweight='bold',
+        if not text:
+            continue  # an unnamed marker is just the tick above — no label to draw or drag
+        label_y = m.get('label_y', 0.98)  # fraction of the axes height, 0 (bottom) to 1 (top) —
+        # draggable (right-click and hold on the label, see interaction.py's label-drag handling)
+        artist = ctx.ax.text(m['time'], label_y, f" {text}", transform=trans,
+                     rotation=90, va='top' if label_y > 0.5 else 'bottom', clip_on=True,
+                     fontsize=m.get('fontsize', 8), color=m['color'], fontweight='bold',
                      bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
+        ctx._marker_label_artists.append((m, artist))
+
+
+def _draw_highlights(ctx, highlights):
+    """Highlighter tool (analysis/highlight.py): a translucent axvspan per highlight, behind
+    everything else (zorder=0, same as the hover tracker's own reference line)."""
+    from .analysis.highlight import HIGHLIGHT_ALPHA
+    for h in highlights:
+        ctx.ax.axvspan(h['start'], h['end'], color=h['color'], alpha=HIGHLIGHT_ALPHA, zorder=0)
+
+
+def _draw_text_annotations(ctx, annotations):
+    """Text tool (analysis/text_annotation.py): free-floating text at each one's (x, y) data
+    position. ctx._text_annotation_artists tracks (annotation dict, Text artist) pairs for
+    interaction.py's right-click drag/delete hit-testing, same pattern as marker labels."""
+    ctx._text_annotation_artists = []
+    for t in annotations:
+        artist = ctx.ax.text(t['x'], t['y'], t['text'], fontsize=t.get('fontsize', 10),
+                              color='black', zorder=5, clip_on=True)
+        ctx._text_annotation_artists.append((t, artist))
 
 
 def _apply_theme_colors(ctx):
@@ -270,9 +295,10 @@ def simple_plot(ctx, draw_now=True):
         title = cache['store']
         x_label = cache.get('x_label', 'X')
         n_snap_lines = len(cache['y_columns'])
-    elif ctx.plot_signal == 'overlay_all' and cache.get('source') == 'TDT':
+    elif cache.get('source') == 'TDT' and len(ctx.plot_signals) > 1:
+        checked = get_checked_signals(ctx)
         ax.axvline(0, color='black', linewidth=1.0, alpha=0.4, zorder=1)
-        for key, sig in cache['signals'].items():
+        for key, sig in checked:
             # lw=1.5, not Oxysoft's 0.8 — the hover tracker below filters
             # visible lines to linewidth >= 1.5 (see interaction.py), so a
             # thinner line here would be silently un-hoverable.
@@ -280,9 +306,9 @@ def simple_plot(ctx, draw_now=True):
                            lw=1.5, alpha=0.8, label=sig['label'])
             decim_lines.append((ln, cache['x'], sig['y']))
         y_label = "Amplitude"
-        title = f"Overlay — {cache['store']}"
+        title = f"Overlay ({len(checked)}) — {cache['store']}"
         x_label = "Time (s)"
-        n_snap_lines = len(cache['signals'])
+        n_snap_lines = len(checked)
     else:
         _, label_text, data_to_plot, color_choice = get_active_signal(ctx)
         ax.axvline(0, color='black', linewidth=1.0, alpha=0.4, zorder=1)
@@ -306,6 +332,8 @@ def simple_plot(ctx, draw_now=True):
     ax.callbacks.connect('xlim_changed', lambda _ax: update_decimated_lines(ctx))
 
     _update_plot_with_notes(ctx, cache['markers'])
+    _draw_highlights(ctx, cache.get('highlights', []))
+    _draw_text_annotations(ctx, cache.get('text_annotations', []))
     ax.set_title(title, fontweight='bold', pad=15)
     ax.set_xlabel(x_label, fontweight='bold')
     ax.set_ylabel(y_label, fontweight='bold')

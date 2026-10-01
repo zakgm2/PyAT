@@ -33,6 +33,51 @@ def _marker_hit_tolerance(ctx):
     return MARKER_HIT_PX * (x1 - x0) / width_px
 
 
+def _hit_marker_label_pg(ctx, view_x, view_y):
+    """(marker, InfiniteLine) whose label is near (view_x, view_y) — both in data/view
+    coordinates — or None. Proximity-based (x within the usual marker-hit tolerance, y within a
+    small pixel band around the label's current height) rather than exact bounding-box
+    hit-testing against the rendered InfLineLabel, which is simpler and plenty robust for a
+    short, single-line label. See _PanZoomViewBox.mouseDragEvent in pg_engine.py, which drives
+    the actual drag."""
+    if not ctx._marker_label_lines:
+        return None
+    vb = ctx.pg_viewbox
+    height_px = vb.height()
+    if not height_px:
+        return None
+    (x0, x1), (y0, y1) = vb.viewRange()
+    tol_x = _marker_hit_tolerance(ctx)
+    tol_y = 14 * (y1 - y0) / height_px  # ~14px vertical tolerance, one text line's ballpark
+    for marker, line in ctx._marker_label_lines:
+        if abs(marker['time'] - view_x) > tol_x:
+            continue
+        label_y_data = y0 + marker.get('label_y', 0.95) * (y1 - y0)
+        if abs(label_y_data - view_y) <= tol_y:
+            return (marker, line)
+    return None
+
+
+def _hit_text_annotation_pg(ctx, view_x, view_y):
+    """(annotation dict, TextItem) near (view_x, view_y) — both in data/view coordinates — or
+    None. Proximity-based against the item's own (x, y) anchor point, same reasoning as
+    _hit_marker_label_pg: simpler than exact bounding-box hit-testing and plenty robust for a
+    short text box."""
+    if not ctx._text_annotation_items:
+        return None
+    vb = ctx.pg_viewbox
+    width_px, height_px = vb.width(), vb.height()
+    if not width_px or not height_px:
+        return None
+    (x0, x1), (y0, y1) = vb.viewRange()
+    tol_x = 20 * (x1 - x0) / width_px   # ~20px — text boxes are wider than a marker tick
+    tol_y = 14 * (y1 - y0) / height_px
+    for annotation, item in reversed(ctx._text_annotation_items):
+        if abs(annotation['x'] - view_x) <= tol_x and abs(annotation['y'] - view_y) <= tol_y:
+            return (annotation, item)
+    return None
+
+
 def on_pg_mouse_moved(ctx, scene_pos):
     plot_item = ctx.pg_plot_item
     if plot_item is None or ctx.cache is None or not ctx.pg_lines:
@@ -88,6 +133,12 @@ def on_pg_mouse_clicked(ctx, ev):
         analysis_type(ctx, x)
         return
 
+    if ctx.text_mode:
+        if ev.button() == Qt.MouseButton.LeftButton:
+            from .analysis.text_annotation import place_text_annotation
+            place_text_annotation(ctx, x, view_pos.y())
+        return
+
     if ctx.marker_mode:
         if ev.button() == Qt.MouseButton.LeftButton:
             place_marker(ctx, x)
@@ -95,10 +146,33 @@ def on_pg_mouse_clicked(ctx, ev):
             _right_click_marker_menu(ctx, x, ev.screenPos(), _marker_hit_tolerance(ctx))
         return
 
+    if ctx.highlight_click_mode and ev.button() == Qt.MouseButton.LeftButton:
+        from .analysis.highlight import apply_highlight_at_point
+        apply_highlight_at_point(ctx, x)
+        return
+
     if ev.button() == Qt.MouseButton.RightButton:
+        # A genuine click (no real drag) — delete a text annotation/highlight if the click
+        # landed on one, else the marker menu if near a marker. A right-click-and-hold that
+        # turns into an actual drag is a different pyqtgraph event entirely, handled by
+        # _PanZoomViewBox.mouseDragEvent (pg_engine.py) instead — pyqtgraph itself already
+        # separates "click" from "drag", so there's no click-vs-drag threshold to do by hand
+        # here the way interaction.py's matplotlib version needs.
+        text_hit = _hit_text_annotation_pg(ctx, x, view_pos.y())
+        if text_hit is not None:
+            from .analysis.text_annotation import delete_text_annotation
+            delete_text_annotation(ctx, text_hit[0])
+            show_window_toast(ctx, "Text box deleted")
+            return
         tol_s = _marker_hit_tolerance(ctx)
         if find_nearest_marker(ctx, x, tol_s) is not None:
             _right_click_marker_menu(ctx, x, ev.screenPos(), tol_s)
+            return
+        from .analysis.highlight import find_highlight_at, delete_highlight
+        highlight = find_highlight_at(ctx, x)
+        if highlight is not None:
+            delete_highlight(ctx, highlight)
+            show_window_toast(ctx, "Highlight deleted")
         return
 
     if ctx.analysis_mode == "Curve Fit" and ev.button() == Qt.MouseButton.LeftButton:
@@ -145,6 +219,7 @@ def _right_click_marker_menu(ctx, xdata, global_pos, tol_s=2.0):
     from .marker_labels import marker_display_label
     from .markers import delete_all_same_name
     from .toasts import show_success
+    from . import undo
 
     idx = find_nearest_marker(ctx, xdata, tol_s)
     if idx is None:
@@ -162,9 +237,13 @@ def _right_click_marker_menu(ctx, xdata, global_pos, tol_s=2.0):
         if open_edit_marker_dialog(ctx, marker):
             pg_simple_plot(ctx)
     elif chosen == act_delete:
+        before = undo.snapshot(ctx)
         ctx.cache['markers'].pop(idx)
+        undo.push(ctx, "deleted a marker", before)
         pg_simple_plot(ctx)
     elif chosen == act_delete_all:
+        before = undo.snapshot(ctx)
         removed = delete_all_same_name(ctx, marker)
+        undo.push(ctx, f"deleted {removed} marker(s)", before)
         pg_simple_plot(ctx)
         show_success(ctx, f"Deleted {removed} '{name}' marker(s)")

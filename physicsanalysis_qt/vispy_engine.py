@@ -55,7 +55,7 @@ from vispy.color import Color
 
 import PhysicsLibrary as pl
 
-from .context import export_file, get_active_signal, trace_color
+from .context import export_file, get_active_signal, get_checked_signals, trace_color
 from .fonts import main_plot_scale, scaled_plot_font_sizes
 from .marker_labels import marker_display_label
 from .plotting import _min_max_decimate
@@ -247,10 +247,11 @@ def vispy_simple_plot(ctx):
             _add_line(x[mask], y[mask], _GEN_COLORS[i % len(_GEN_COLORS)], 2, col_name)
         y_label, title_text = "Value", cache['store']
         x_label = cache.get('x_label', 'X')
-    elif cache.get('source') == 'TDT' and ctx.plot_signal == 'overlay_all':
-        for key, sig in cache['signals'].items():
+    elif cache.get('source') == 'TDT' and len(ctx.plot_signals) > 1:
+        checked = get_checked_signals(ctx)
+        for key, sig in checked:
             _add_line(cache['x'], sig['y'], sig['color'], 1, sig['label'], alpha=0.8)
-        y_label, title_text = "Amplitude", f"Overlay — {cache['store']}"
+        y_label, title_text = "Amplitude", f"Overlay ({len(checked)}) — {cache['store']}"
         x_label = "Time (s)"
     else:
         _, label_text, data_to_plot, color = get_active_signal(ctx)

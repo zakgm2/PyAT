@@ -54,6 +54,7 @@ from PyQt6.QtWidgets import (
     QRadioButton, QButtonGroup, QListWidget,
 )
 
+from .. import undo
 from ..background import run_with_progress
 from ..toasts import show_error, show_window_toast
 from ..window_fit import fit_to_screen
@@ -276,6 +277,7 @@ def _apply_splice(ctx, mode, start, end, announce=True, progress=None):
             show_error(ctx, msg)
         return False
 
+    before = undo.snapshot(ctx)
     if ctx.original_cache is None:
         ctx.original_cache = ctx.cache
 
@@ -285,6 +287,7 @@ def _apply_splice(ctx, mode, start, end, announce=True, progress=None):
     ctx._data_generation += 1
     ctx.cache = spliced
     ctx._active_splices = new_splices
+    undo.push(ctx, "applied a splice", before)
     simple_plot(ctx)
     if announce:
         n_samples = len(spliced['x'])
@@ -365,10 +368,12 @@ def remove_splice(ctx, index):
                          "try removing a different one, or Restore Full Recording.")
         return False
 
+    before = undo.snapshot(ctx)
     cache['store'] = _spliced_store_name(ctx.original_cache['store'], remaining)
     ctx._data_generation += 1
     ctx.cache = cache
     ctx._active_splices = remaining
+    undo.push(ctx, "removed a splice", before)
     simple_plot(ctx)
     show_window_toast(ctx, f"Removed splice — {len(remaining)} remaining")
     return True
@@ -381,10 +386,12 @@ def restore_full_recording(ctx):
 
     from ..plotting import simple_plot
 
+    before = undo.snapshot(ctx)
     ctx._data_generation += 1
     ctx.cache = ctx.original_cache
     ctx.original_cache = None
     ctx._active_splices = []
+    undo.push(ctx, "restored the full recording", before)
     simple_plot(ctx)
     show_window_toast(ctx, "Restored full recording")
 

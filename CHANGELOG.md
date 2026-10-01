@@ -2,6 +2,43 @@
 
 ---
 
+## v3.2.0
+**New: Group Analysis measures figure — single-measure view, editable titles, auto-scaled heatmap**
+- The measures figure's Customize panel can now show a single measure full-size instead of always the whole grid (handiest for box-and-whisker, which was cramped in a small grid cell).
+- Fixed the measures figure's title overlapping the panel titles below it whenever its window/canvas was smaller than whatever size happened to be current when the figure was built — it used a one-shot layout pass that never revisited the title's spacing afterward. It now uses matplotlib's `constrained` layout, which keeps re-solving as the figure resizes, and the canvas's minimum size is sized off the figure's own dimensions so the window can be shrunk freely without ever reaching a size small enough to break it.
+- Fixed the results dialog sometimes needing to be far taller than the screen to open at all. A `QStackedWidget`'s minimum size is the largest across every figure it holds, shown or not (Qt's own documented behavior) — the tall model-diagnostics grid was forcing that much room to be reserved even while a small trace or single-measure view was what was actually on screen. The minimum now tracks only the currently displayed figure and updates on every switch.
+- Every figure (traces, each heatmap, measures, diagnostics) now has its own editable **Title** field next to the Figure picker, same "typed text wins" convention as Event PETH's — untouched titles keep tracking their auto-generated text, and a customized one survives switching figures, Customize panel changes, and Export Plot.
+- The per-marker heatmap's color scale is now symmetric around zero, sized off that heatmap's own peak amplitude plus 2 units of headroom (e.g. a 2.5 peak scales to -4..4, a 7 peak to -9..9) instead of a 98th-percentile heuristic, so the true peak is always visible without sitting right at the colorbar's edge.
+
+**New: Ctrl+Z undoes the last marker or splice edit**
+- One step at a time: placing/renaming/deleting a marker (or a bulk add/remove), renaming/resetting a store name, and applying/removing a splice (or Restore Full Recording) each push one undo step, restored wholesale on Ctrl+Z — not a general app-wide undo (Edit Attributes, Options, the plot engine, etc. are unaffected). Works the same across all three plot engines. A toast says what was undone; "Nothing to undo" once the stack is empty.
+
+**New: Event PETH's figure title is editable**
+- A **Title** field defaults to "Event PETH — {event}" and tracks the event picker until you type your own; from then on your text is left alone, even across switching events or Recalculate, the same "typed text wins" convention Edit Attributes already uses for the main plot's title.
+
+**New: Highlighter tool**
+- A new icon in the left sidebar: pick one of 5 standard highlighter colors (Yellow, Green, Pink, Orange, Blue), then click two points on the plot to shade the range between — non-destructive, stacks (several can overlap), works on both the matplotlib and PyQtGraph engines. Right-click a highlight to delete it. Saved/restored like markers and splices (a `highlights.json` sidecar), and covered by Save Changes, Undo All Changes, and Ctrl+Z.
+
+**New: Text tool**
+- Another new icon: click the plot to drop a free text box there — content and font size are asked fresh each time, since two boxes usually say different things. One-shot, not a stays-on toggle: one click of the icon places one box, then it disarms itself (matches Splice/Highlighter rather than Add Marker's repeat-placement style). No background box around the text. Right-click and hold on one to drag it anywhere; a plain right-click (no hold) deletes it instead. Works on both plot engines, saved/restored the same way as highlights (`text_annotations.json`).
+- Fixed a dragged text box (or marker label) snapping back to its old position the moment the mouse moved again after the drag, only "teleporting" to where it was actually dropped on some later, unrelated redraw. The hover tracker keeps its own cached snapshot of the canvas to restore between frames (see `_refresh_hover_bg`); finishing a drag drew the new position once, but left that cache holding the old one, so the very next mouse-move pasted the stale image straight back over it. Panning already avoids this by recapturing the cache after its own drag — the text/label drag now does the same.
+- Fixed placing a text box corrupting the rectangle-zoom-select tool afterward (click-drag-to-zoom would behave erratically). The text dialog blocks while still inside the same mouse-press handler RectangleSelector is also listening to, which desyncs its internal drag state — the same already-known issue window-settings dialogs have, fixed the same already-established way (deactivate it before the dialog opens, reactivate on the next Qt tick rather than immediately).
+
+**New: markers can be placed with no name**
+- The marker name field in Add Marker (and the right-click Rename dialog) no longer silently falls back to the word "Marker" when left blank — leaving it empty now places a genuinely unnamed marker: just the dashed tick, no label to draw, position, or drag.
+
+**New: a marker's label can be dragged to a different height**
+- Right-click and hold on a marker's label text (not the line itself) to slide it up or down along the marker, on both plot engines — handy for separating overlapping labels on markers that are close together in time. Persisted with the marker, undoable with Ctrl+Z.
+
+**Changed: the "Plot:" dropdown is now checkboxes**
+- Pick any combination of the signals a TDT recording offers (Normalized, Isosbestic, Main Driver) to overlay on the main plot, instead of one at a time plus a separate "Overlay All" entry — ticking every box is now just what that used to be. Works the same on both the matplotlib and PyQtGraph engines; PyQtGraph's fast in-place line swap still applies whenever exactly one box ends up checked. AUC, FFT, Curve Fit, and Z-Score PETH keep working on a single signal — whichever box was checked most recently — unaffected by how many are shown on the plot.
+- The checkboxes themselves moved into a dropdown (one fixed-width button, its label summarizing what's picked) instead of a row inline in the toolbar — a row grows with however many signals a recording has and doesn't scale down to a narrow window; a dropdown stays the same size regardless. The dropdown stays open across ticking several boxes in a row, rather than closing after each one.
+
+**Changed: the Tools sidebar's collapse arrow and title**
+- The "Tools" title next to the collapse arrow is gone while the sidebar is expanded — the column of icons doesn't need it. The arrow itself is now the first icon in that same column (same size, same alignment as Rescale/Add Marker/etc. below it) instead of sitting in its own separate header row. Collapsed, it still shrinks to the slim tab with "Tools" written sideways, click it to expand.
+
+---
+
 ## v3.1.0
 **New: Group Analysis ("Hypothesis Testing") — compare markers across recordings**
 - Opening a folder that contains two or more TDT recordings now offers **Hypothesis Testing** alongside Single Experiment Analysis. A five-page wizard picks recordings, markers (each ticked marker is a level of one factor), the analysis window, and the measures to compute (AUC, Peak Amplitude, Mean Amplitude, Latency to Peak, Decay Time), then names the group and runs.

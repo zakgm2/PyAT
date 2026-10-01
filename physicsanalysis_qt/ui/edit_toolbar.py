@@ -6,28 +6,28 @@ or gets analyzed WITHOUT touching the original raw data on disk (or, for
 Splice, without mutating the original in-memory recording either) —
 Rescale, Add Marker, Splice/Restore, Save Changes, Undo All Changes,
 Measure Intervals, and anywhere else this grows. Small square icon
-buttons (emoji glyphs, no external image assets needed) in a
-fixed-width vertical strip titled "Tools", collapsible via a small arrow
-handle so it doesn't have to stay in view — collapsed, it shrinks to a slim
-tab with "Tools" written sideways down the middle (click it to expand).
+buttons (emoji glyphs, no external image assets needed) in a fixed-width
+vertical strip, collapsible via the first icon in the column (an arrow,
+lined up with the rest, no separate title/header row) so it doesn't have
+to stay in view — collapsed, it shrinks to a slim tab with "Tools"
+written sideways down the middle (click it to expand).
 """
 
 from PyQt6.QtCore import Qt, QRect
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QMessageBox, QMenu,
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QMessageBox, QMenu
 from PyQt6.QtGui import QFont, QFontMetrics, QPainter, QPalette
 
 from ..interaction import reset_zoom
 from ..markers import toggle_marker_mode
-from ..sidecar import save_markers, clear_json_saves
+from ..sidecar import save_markers, save_highlights, save_text_annotations, clear_json_saves
 from ..analysis.splice import (
     restore_full_recording, is_spliced, save_splice, open_splice_manager, start_splice_flow,
 )
+from ..analysis.highlight import start_highlight_flow
+from ..analysis.text_annotation import toggle_text_mode
 from ..analysis.intervals import launch_intervals
 
 _ICON_SIZE = 44
-_HANDLE_WIDTH = 18
 _COLLAPSED_WIDTH = 30  # wide enough for the sideways "Tools" text
 
 
@@ -123,26 +123,17 @@ def build_edit_toolbar(ctx):
     outer.setContentsMargins(0, 8, 0, 8)
     outer.setSpacing(6)
 
-    # Header: the collapse handle, with the "Tools" title beside it.
-    header = QHBoxLayout()
-    header.setContentsMargins(0, 0, 0, 0)
-    header.setSpacing(0)
-    btn_handle = QPushButton("◂")
-    btn_handle.setFixedSize(_HANDLE_WIDTH, _ICON_SIZE)
-    btn_handle.setToolTip("Collapse/expand the Tools sidebar")
-    header.addWidget(btn_handle)
-    title = QLabel("Tools")
-    title_font = title.font()
-    title_font.setBold(True)
-    title.setFont(title_font)
-    title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    header.addWidget(title, stretch=1)
-    outer.addLayout(header)
-
     content = QWidget()
     content_layout = QVBoxLayout(content)
     content_layout.setContentsMargins(6, 0, 6, 0)
     content_layout.setSpacing(6)
+
+    # Collapse handle — sized and aligned exactly like every button below it (not a separate
+    # header row), so it reads as part of the same column instead of off to one side. No "Tools"
+    # title next to it while expanded — the column of icons is self-explanatory, and expanding
+    # back is via the sideways "Tools" tab shown only in the collapsed state, below.
+    btn_handle = _icon_button("◂", "Collapse the Tools sidebar")
+    content_layout.addWidget(btn_handle)
 
     btn_rescale = _icon_button(
         "⛶", "Rescale — fit the view to the full recording (was \"Reset Zoom\")")
@@ -176,10 +167,23 @@ def build_edit_toolbar(ctx):
         lambda pos: _on_splice_right_clicked(ctx, btn_splice, pos))
     content_layout.addWidget(btn_splice)
 
+    btn_highlight = _icon_button(
+        "🖍", "Highlighter — pick a color, then click two points on the graph to shade the "
+              "range between (non-destructive). Right-click a highlight to delete it.")
+    btn_highlight.clicked.connect(lambda: start_highlight_flow(ctx))
+    content_layout.addWidget(btn_highlight)
+
+    ctx.btn_text_tool = _icon_button(
+        "🔤", "Text — click the plot to place a text box there (font size adjustable); "
+              "right-click and hold on one to drag it, right-click without holding to delete it.")
+    ctx.btn_text_tool.clicked.connect(lambda: toggle_text_mode(ctx))
+    content_layout.addWidget(ctx.btn_text_tool)
+
     btn_save_changes = _icon_button(
-        "💾", "Save Changes — writes current markers and any active splice to "
-              "JSON files next to the recording, doesn't touch the original raw data")
-    btn_save_changes.clicked.connect(lambda: (save_markers(ctx), save_splice(ctx)))
+        "💾", "Save Changes — writes current markers, highlights, text and any active splice "
+              "to JSON files next to the recording, doesn't touch the original raw data")
+    btn_save_changes.clicked.connect(
+        lambda: (save_markers(ctx), save_highlights(ctx), save_text_annotations(ctx), save_splice(ctx)))
     content_layout.addWidget(btn_save_changes)
 
     btn_undo_all = _icon_button(
@@ -208,11 +212,8 @@ def build_edit_toolbar(ctx):
     def _toggle():
         expanded = state["expanded"] = not state["expanded"]
         content.setVisible(expanded)
-        title.setVisible(expanded)
         collapsed_area.setVisible(not expanded)
         container.setFixedWidth(_ICON_SIZE + 12 if expanded else _COLLAPSED_WIDTH)
-        btn_handle.setFixedWidth(_HANDLE_WIDTH if expanded else _COLLAPSED_WIDTH)
-        btn_handle.setText("◂" if expanded else "▸")
 
     btn_handle.clicked.connect(_toggle)
 
