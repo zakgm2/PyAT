@@ -7,30 +7,30 @@
 # single executable instead of a folder of DLLs/data files, so CI can
 # upload/attach it directly with no zip step. Trade-off: onefile
 # self-extracts to a temp dir on every launch, adding startup latency on
-# top of matplotlib/pyqtgraph/vispy's own import cost.
-#
-# vispy has no maintained PyInstaller hook (confirmed: vispy/vispy#1643) —
-# it resolves its .glsl shader files and font data relative to
-# site-packages at runtime, which doesn't exist in a frozen build's temp
-# extraction dir, so those are collected explicitly below.
+# top of matplotlib/pyqtgraph's own import cost.
 #
 # sentence-transformers/torch/transformers are excluded on purpose: they're
-# only reachable via one lazy import inside PhysicsLibrary's Text Field
+# only reachable via one lazy import inside PyATCLI's Text Field
 # Study embedding feature, but PyInstaller's static scanner finds
 # function-local imports too and would otherwise bundle the whole
 # torch/transformers tree (hundreds of MB-1GB+) for a feature most builds
 # of this app will never touch. That one function now catches the
 # resulting ImportError and tells the user to `pip install
-# sentence-transformers` if they want it — see PhysicsLibrary's
-# text_field_study.py.
+# sentence-transformers` if they want it — see PyATCLI's
+# fieldstudy/study.py.
+#
+# One executable is both the window and the analysis engine: the window starts
+# `PyAT.exe --engine serve ...` as a second process (run_qt.pyw sends --engine to
+# PyATCLI's command line before it imports Qt), so nothing slow runs on the
+# window's thread and the download is not doubled by a second program.
 #
 # Run with: pyinstaller PhysicsAnalysis.spec
 #
-# pathex: only needed on a machine where PhysicsLibrary is editable-
+# pathex: only needed on a machine where PyATCLI is editable-
 # installed via a PEP 660 import-hook finder (not a plain sys.path
 # entry) — PyInstaller's static analysis can't follow that redirect, so
 # it needs the sibling repo's actual source directory to find/bundle it
-# at all. CI installs PhysicsLibrary as a normal (non-editable) package
+# at all. CI installs PyATCLI as a normal (non-editable) package
 # from PyPI, where PyInstaller finds it via site-packages with no help
 # needed, so this only adds the local dev checkout's path when it's
 # actually present on the machine running this build.
@@ -42,15 +42,25 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import copy_metadata
 
 block_cipher = None
 
-vispy_datas = collect_data_files('vispy', subdir='glsl')
-vispy_datas += collect_data_files('vispy', subdir=os.path.join('io', '_data'))
+# Version stamps (a provenance record, the error log header, `PyAT.exe --engine info`) are read from
+# installed-package metadata, which a frozen app only has if it is bundled: without these, every export
+# made by the shipped app says its library and packages are "unknown".
+_metadata = []
+for _dist in ('PyATCLI', 'numpy', 'scipy', 'pandas', 'statsmodels', 'scikit-learn', 'matplotlib',
+              'tdt', 'openpyxl', 'tqdm', 'PyQt6', 'pyqtgraph'):
+    try:
+        _metadata += copy_metadata(_dist)
+    except Exception:                                    # not installed in this build environment: just absent
+        pass
 
-_local_physicslibrary = r'C:\Users\zakgm\Desktop\Github\PhysicsLibrary'
-_pathex = [_local_physicslibrary] if os.path.isdir(_local_physicslibrary) else []
+# the sibling checkout: its folder is PyATCLI, or PhysicsLibrary on a machine where it has not been renamed yet
+_local_pyatcli = next((p for p in (r'C:\Users\zakgm\Desktop\Github\PyATCLI', r'C:\Users\zakgm\Desktop\Github\PhysicsLibrary')
+                       if os.path.isdir(os.path.join(p, 'PyATCLI'))), None)
+_pathex = [_local_pyatcli] if _local_pyatcli else []
 
 if sys.platform == 'darwin':
     _icon_path = 'physicsanalysis_qt/assets/icon.icns'
@@ -64,11 +74,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('physicsanalysis_qt/assets', 'physicsanalysis_qt/assets'),
-    ] + vispy_datas,
-    # vispy.app.use_app("pyqt6") loads its backend module by string name
-    # at runtime (vispy.app.application._use), which PyInstaller's static
-    # analysis can't see — has to be listed explicitly.
-    hiddenimports=['vispy.app.backends._pyqt6'],
+    ] + _metadata,
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

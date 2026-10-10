@@ -15,17 +15,18 @@ from matplotlib.widgets import RectangleSelector
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSizePolicy, QStatusBar, QStackedWidget,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenu, QSizePolicy, QStatusBar, QStackedWidget,
     QToolButton,
 )
 
-from .. import interaction
-from .. import undo
-from ..pg_engine import build_pg_widget, sync_pg_margins
-from ..toasts import show_error, show_window_toast
-from ..update_check import local_version
-from ..vispy_engine import build_vispy_widget, sync_vispy_margins
-from ..window_fit import fit_to_screen
+from ..app import errorlog
+from ..plot import interaction
+from ..edit import undo
+from ..app.background import cancel_running
+from ..plot.pg_engine import build_pg_widget, sync_pg_margins
+from ..app.toasts import show_error, show_window_toast
+from ..app.update_check import local_version
+from ..app.window_fit import fit_to_screen
 from .toolbar import build_toolbar
 from .edit_toolbar import build_edit_toolbar
 
@@ -38,20 +39,18 @@ def _widget_for_engine(ctx):
     engine = ctx.settings.get("plot_engine")
     if engine == "pyqtgraph":
         return ctx.pg_widget
-    if engine == "vispy":
-        return ctx.vispy_canvas.native
     return ctx.canvas
 
 
 class _PlotStack(QStackedWidget):
     """QStackedWidget that debounce-triggers a re-render on resize when
-    the PyQtGraph or VisPy engine is active, so their fonts stay scaled
-    to the current widget size — matplotlib gets this for free via its
-    own resize_event (see interaction.on_resize). Also keeps each
-    engine's inset margins matched to matplotlib's subplot margins on
-    every resize, so all three engines frame their plot the same
-    distance from the edges — the widget itself stays full size either
-    way; only how much of it the axes/data occupy changes."""
+    the PyQtGraph engine is active, so its fonts stay scaled to the
+    current widget size — matplotlib gets this for free via its own
+    resize_event (see interaction.on_resize). Also keeps PyQtGraph's
+    inset margins matched to matplotlib's subplot margins on every
+    resize, so both engines frame their plot the same distance from
+    the edges — the widget itself stays full size either way; only how
+    much of it the axes/data occupy changes."""
 
     def __init__(self, ctx):
         super().__init__()
@@ -74,13 +73,9 @@ class _PlotStack(QStackedWidget):
         # once after the drag settles, since both are more expensive.
         engine = ctx.settings.get("plot_engine")
         if engine == "pyqtgraph":
-            from ..pg_engine import pg_refresh_fonts
+            from ..plot.pg_engine import pg_refresh_fonts
             pg_refresh_fonts(ctx)
-        elif engine == "vispy":
-            from ..vispy_engine import vispy_refresh_fonts
-            vispy_refresh_fonts(ctx)
         sync_pg_margins(ctx, reprobe=False)
-        sync_vispy_margins(ctx)
         self._timer.start(150)
 
     def _replot(self):
@@ -96,13 +91,9 @@ class _PlotStack(QStackedWidget):
         ctx = self._ctx
         engine = ctx.settings.get("plot_engine")
         if engine == "pyqtgraph":
-            from ..pg_engine import pg_refresh_fonts
+            from ..plot.pg_engine import pg_refresh_fonts
             pg_refresh_fonts(ctx)
-        elif engine == "vispy":
-            from ..vispy_engine import vispy_refresh_fonts
-            vispy_refresh_fonts(ctx)
         sync_pg_margins(ctx, reprobe=True)
-        sync_vispy_margins(ctx)
 
 
 def build_main_window(ctx):
@@ -143,26 +134,27 @@ def build_main_window(ctx):
     build_pg_widget(ctx)  # sets ctx.pg_widget / ctx.pg_plot_item
     ctx.stacked_plot_widget.addWidget(ctx.pg_widget)
 
-    vispy_native = build_vispy_widget(ctx)  # sets ctx.vispy_canvas / ctx.vispy_view
-    ctx.stacked_plot_widget.addWidget(vispy_native)
-
     ctx.stacked_plot_widget.setCurrentWidget(_widget_for_engine(ctx))
     sync_pg_margins(ctx)
-    sync_vispy_margins(ctx)
 
     ctx.status_bar = QStatusBar()
     ctx.win.setStatusBar(ctx.status_bar)
     ctx.status_bar.showMessage("X: -- | Y: -- | Pt: --")
     ctx.status_bar.addPermanentWidget(_build_coffee_button())
     ctx.status_bar.addPermanentWidget(_build_citation_button(ctx))
-    ctx.status_bar.addPermanentWidget(_build_feedback_button())
+    ctx.status_bar.addPermanentWidget(_build_feedback_button(ctx))
 
-    # Ctrl+Z: undoes the last marker/splice edit (undo.py), one step at a time — not a general
+    # Ctrl+Z: undoes the last marker/splice edit (edit/undo.py), one step at a time — not a general
     # app-wide undo (Edit Attributes, Options, plot engine, etc. are untouched by it). Default
     # WindowShortcut context: a focused QLineEdit's own built-in text-undo still consumes Ctrl+Z
     # first, so this only fires when nothing is mid-edit.
     shortcut_undo = QShortcut(QKeySequence("Ctrl+Z"), ctx.win)
     shortcut_undo.activated.connect(lambda: _undo_last_action(ctx))
+
+    # Esc: stops what the analysis engine is doing for the window (a long load, a splice's dF/F
+    # re-fit, a group analysis) at its next progress report. Nothing running: nothing happens.
+    shortcut_cancel = QShortcut(QKeySequence("Esc"), ctx.win)
+    shortcut_cancel.activated.connect(lambda: cancel_running(ctx))
 
     return ctx.win
 
@@ -174,6 +166,7 @@ def _undo_last_action(ctx):
     if label is None:
         show_error(ctx, "Nothing to undo.")
     else:
+        errorlog.action("undo", what=label)
         show_window_toast(ctx, f"Undid: {label}")
 
 
@@ -190,16 +183,22 @@ def _build_coffee_button():
     return btn
 
 
-def _build_feedback_button():
-    """Bug icon in the status bar's bottom-right corner — opens the GitHub
-    issues page in the user's browser so bug reports/feedback don't need
-    to be routed through the developer manually."""
+def _build_feedback_button(ctx):
+    """Bug icon in the status bar's bottom-right corner: a menu to save a problem report (what to send the
+    developer when something goes wrong — see app/errorlog.py), open the error-log folder, or open the GitHub
+    issues page in the user's browser."""
     btn = QToolButton()
-    btn.setText("\U0001F41E")  # 🐞
-    btn.setToolTip("Send Feedback")
+    btn.setText("🐞")
+    btn.setToolTip("Report a problem")
     btn.setAutoRaise(True)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-    btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
+    menu = QMenu(btn)
+    menu.addAction("Save problem report…", lambda: errorlog.save_report_dialog(ctx.win))
+    menu.addAction("Open error log folder", errorlog.open_log_folder)
+    menu.addSeparator()
+    menu.addAction("Send feedback on GitHub", lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
+    btn.setMenu(menu)
+    btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
     return btn
 
 
@@ -262,10 +261,9 @@ def switch_plot_engine(ctx):
     """Called by Options when the user changes the plot engine. Swaps the
     visible widget in the stack and re-renders the current dataset with
     the newly selected engine."""
-    from ..plotting import simple_plot
+    from ..plot.plotting import simple_plot
 
     ctx.stacked_plot_widget.setCurrentWidget(_widget_for_engine(ctx))
     sync_pg_margins(ctx)
-    sync_vispy_margins(ctx)
     if ctx.cache is not None:
         simple_plot(ctx)

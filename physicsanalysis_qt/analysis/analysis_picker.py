@@ -34,8 +34,8 @@ button on its graph window).
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox
 
 from .window_settings import open_window_dialog, window_summary
-from ..toasts import show_error, show_window_toast, show_pinned_panel, hide_pinned_panel
-from ..window_fit import fit_to_screen
+from ..app.toasts import show_error, show_window_toast, show_pinned_panel, hide_pinned_panel
+from ..app.window_fit import fit_to_screen
 
 _TOOLS = [
     {

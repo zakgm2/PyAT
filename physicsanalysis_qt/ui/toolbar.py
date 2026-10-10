@@ -4,7 +4,7 @@ ui/toolbar.py
 Builds the top toolbar: Open menu, the Analysis button, view
 controls, and (pushed to the far right via a stretch, so it sits in the
 window's top-right corner) the Options gear icon. Grid visibility lives
-in the Edit Attributes dialog (attributes.py); Add Marker, Splice, Save
+in the Edit Attributes dialog (edit/attributes.py); Add Marker, Splice, Save
 Markers, and Measure Intervals live in the left icon sidebar
 (edit_toolbar.py), not here.
 """
@@ -15,21 +15,22 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QMenu, QLabel, QToolButton,
 )
 
-from ..loaders.tdt import open_folder, reload_folder
-from ..loaders.oxysoft import open_file, reload_file
-from ..loaders.generic import launch_generic_file_loader, reload_generic
-from ..loaders.pt2 import launch_pt2_viewer
-from ..loaders.text_field_study import open_field_study_folder
-from ..plotting import export_canvas_action
-from ..plot_signal import build_plot_signal_control
-from ..attributes import open_attributes_window
-from ..options import open_options_dialog
-from ..toasts import show_error
+from ..loading.tdt import open_folder, reload_folder
+from ..loading.oxysoft import open_file, reload_file
+from ..loading.generic import launch_generic_file_loader, reload_generic
+from ..loading.pt2 import launch_pt2_viewer
+from ..fieldstudy.open_study import open_field_study_folder
+from ..plot.plotting import export_canvas_action
+from ..plot.plot_signal import build_plot_signal_control
+from ..edit.attributes import open_attributes_window
+from ..app.options import open_options_dialog
+from ..app.toasts import show_error
 from ..analysis.window_settings import init_window_settings
 from ..analysis.analysis_picker import open_analysis_menu
-from ..analysis.text_field_study import launch_field_study_results
-from ..analysis.field_study_validation import launch_field_study_validation
+from ..fieldstudy.results import launch_field_study_results
+from ..fieldstudy.validation import launch_field_study_validation
 from ..analysis.custom_statistics import launch_custom_statistics
+from ..analysis.open_results import open_results
 
 
 def _reload_current(ctx):
@@ -66,6 +67,10 @@ def build_toolbar(ctx):
     open_menu.addAction("Open TXT (Oxysoft)", lambda: open_file(ctx))
     open_menu.addAction("Open Excel/CSV/TSV", lambda: launch_generic_file_loader(ctx))
     open_menu.addAction("Open PT2 (EFNMR)", lambda: launch_pt2_viewer(ctx))
+    open_menu.addSeparator()
+    act_results = open_menu.addAction("Open Results…", lambda: open_results(ctx))
+    act_results.setToolTip("Look at a finished analysis again: a group analysis's folder (pick its analysis_settings.json), "
+                           "an analysis' .provenance.json record, or an exported table (.csv).")
     open_menu_btn.setMenu(open_menu)
     layout.addWidget(open_menu_btn)
 
@@ -113,7 +118,7 @@ def build_toolbar(ctx):
 
     layout.addWidget(QLabel("|"))
 
-    btn_export_view = QPushButton("Export View (PNG/PDF)")
+    btn_export_view = QPushButton("Export View")
     btn_export_view.clicked.connect(lambda: export_canvas_action(ctx))
     layout.addWidget(btn_export_view)
 

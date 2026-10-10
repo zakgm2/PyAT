@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PhysicsAnalysisGUI"
-version = "3.2.0"
+version = "4.0.0"
 description = "Desktop GUI for loading, visualising, and analysing physics lab data (TDT, Oxysoft, generic tabular, EFNMR/.pt2) and text field studies"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -20,8 +20,7 @@ dependencies = [
     "packaging",
     "PyQt6",
     "pyqtgraph",
-    "vispy==0.16.2",
-    "ZaksPhysicsLibrary>=2026.9.28",
+    "PyATCLI>=2026.10.10",
 ]
 
 # Without this, setuptools' flat-layout auto-discovery refuses to guess

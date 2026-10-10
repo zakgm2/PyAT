@@ -12,9 +12,9 @@ under the folder the person opened:
 
 It ends by saving the choices as analysis_settings.json in a folder named after the
 group, inside the output location, and then runs the analysis (run.py). The dialog only
-collects and checks settings; the rules for what is valid live in PhysicsLibrary's GroupSpec,
-and the event lists come from scan.py, which builds them the way the single-recording Event
-PETH does.
+collects and checks settings; the rules for what is valid live in PyATCLI's GroupSpec,
+and the event lists come from PyATCLI's scan_recordings, which builds them the way the
+single-recording Event PETH does.
 """
 
 import html
@@ -28,15 +28,13 @@ from PyQt6.QtWidgets import (
     QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-import PhysicsLibrary as pl
-from PhysicsLibrary.analysis import group as pl_group
-
-from ...background import run_in_background
-from ...toasts import show_error, show_window_toast
-from ...window_fit import fit_to_screen
-from .output import SETTINGS_FILENAME, output_base, resolve_group_dir, safe_folder_name, write_settings
+from ...backend import api
+from ...app import errorlog
+from ...app.background import run_engine
+from ...app.toasts import show_error
+from ...app.window_fit import fit_to_screen
+from .output import output_base, resolve_group_dir, safe_folder_name
 from .run import start_group_run
-from .scan import default_subject_names, scan_recordings
 
 _ERROR_STYLE = "color: #d9534f;"
 _MUTED_STYLE = "color: gray;"
@@ -57,6 +55,11 @@ _SIGNAL_TEXT = {
     "dff":    "dF/F minus the baseline mean (keeps the signal's own units)",
     "zscore": "Z-score against the baseline (its mean and SD, as in the TDT example)",
 }
+
+
+def _defaults():
+    """The settings as they start out: every default the wizard offers is one of these, so the wizard has none of its own."""
+    return api.group.new_settings()
 
 
 def describe_analysis(n_markers):
@@ -152,7 +155,7 @@ class _RecordingsPage(_Page):
         lay.addWidget(self.lbl_path)
 
         self.table = _table(["", "Subject", "Recording", "Events", "Notes"])
-        names = default_subject_names([s["folder"] for s in scans], dlg.base_path)
+        names = api.group.default_subject_names([s["folder"] for s in scans], dlg.base_path)
         self.table.blockSignals(True)
         self.table.setRowCount(len(scans))
         for i, (sc, subject) in enumerate(zip(scans, names)):
@@ -302,7 +305,7 @@ class _MarkersPage(_Page):
         if shown_before:
             self._ticked = (self._ticked - shown_before) | set(self._displayed_ticks())
         design = self.dlg.design_scans()
-        index = pl.marker_index(design)
+        index = api.group.marker_index(design)
         n = len(design)
         names = [m for m, e in index.items() if self.chk_all.isChecked() or e["recordings"] == n]
         names.sort(key=lambda m: (index[m]["recordings"] != n, m))
@@ -359,12 +362,12 @@ class _WindowPage(_Page):
             "relative to the event (before it is negative)."))
 
         grid = QGridLayout()
-        self.pre = _seconds_spin(0.5, 600, pl_group.DEFAULT_PRE)
-        self.post = _seconds_spin(0.5, 600, pl_group.DEFAULT_POST)
-        self.b0 = _seconds_spin(-600, 0, pl_group.DEFAULT_BASELINE[0])
-        self.b1 = _seconds_spin(-600, 0, pl_group.DEFAULT_BASELINE[1])
-        self.r0 = _seconds_spin(0, 600, pl_group.DEFAULT_RESPONSE[0])
-        self.r1 = _seconds_spin(0, 600, pl_group.DEFAULT_RESPONSE[1])
+        self.pre = _seconds_spin(0.5, 600, _defaults().pre)
+        self.post = _seconds_spin(0.5, 600, _defaults().post)
+        self.b0 = _seconds_spin(-600, 0, _defaults().baseline[0])
+        self.b1 = _seconds_spin(-600, 0, _defaults().baseline[1])
+        self.r0 = _seconds_spin(0, 600, _defaults().response[0])
+        self.r1 = _seconds_spin(0, 600, _defaults().response[1])
         grid.addWidget(QLabel("Window:"), 0, 0)
         grid.addWidget(QLabel("before the event"), 0, 1)
         grid.addWidget(self.pre, 0, 2)
@@ -380,7 +383,7 @@ class _WindowPage(_Page):
         grid.addWidget(self.r0, 2, 2)
         grid.addWidget(QLabel("to"), 2, 3)
         grid.addWidget(self.r1, 2, 4)
-        self.smooth = _seconds_spin(0.0, 10.0, pl_group.GroupSpec().smooth_seconds)
+        self.smooth = _seconds_spin(0.0, 10.0, _defaults().smooth_seconds)
         self.smooth.setDecimals(2)
         self.smooth.setSingleStep(0.1)
         grid.addWidget(QLabel("Smoothing:"), 3, 0)
@@ -394,7 +397,7 @@ class _WindowPage(_Page):
         sig_lay = QVBoxLayout(sig)
         self.signal_group = QButtonGroup(self)
         self._signal_buttons = {}
-        for key in pl_group.SIGNALS:
+        for key in api.group.signals:
             rb = QRadioButton(_SIGNAL_TEXT[key])
             self.signal_group.addButton(rb)
             self._signal_buttons[key] = rb
@@ -434,10 +437,10 @@ class _WindowPage(_Page):
             rb.toggled.connect(lambda _c: self._refresh())
 
     def _reset(self):
-        for w, v in ((self.pre, pl_group.DEFAULT_PRE), (self.post, pl_group.DEFAULT_POST),
-                     (self.b0, pl_group.DEFAULT_BASELINE[0]), (self.b1, pl_group.DEFAULT_BASELINE[1]),
-                     (self.r0, pl_group.DEFAULT_RESPONSE[0]), (self.r1, pl_group.DEFAULT_RESPONSE[1]),
-                     (self.smooth, pl_group.GroupSpec().smooth_seconds)):
+        for w, v in ((self.pre, _defaults().pre), (self.post, _defaults().post),
+                     (self.b0, _defaults().baseline[0]), (self.b1, _defaults().baseline[1]),
+                     (self.r0, _defaults().response[0]), (self.r1, _defaults().response[1]),
+                     (self.smooth, _defaults().smooth_seconds)):
             w.setValue(v)
         self._signal_buttons["dff"].setChecked(True)
 
@@ -448,10 +451,10 @@ class _WindowPage(_Page):
         return next(k for k, rb in self._signal_buttons.items() if rb.isChecked())
 
     def _window_spec(self):
-        return pl_group.GroupSpec(pre=self.pre.value(), post=self.post.value(),
-                                  baseline=(self.b0.value(), self.b1.value()),
-                                  response=(self.r0.value(), self.r1.value()), signal=self._signal(),
-                                  smooth_seconds=self.smooth.value())
+        return api.group.new_settings(pre=self.pre.value(), post=self.post.value(),
+                                      baseline=(self.b0.value(), self.b1.value()),
+                                      response=(self.r0.value(), self.r1.value()), signal=self._signal(),
+                                      smooth_seconds=self.smooth.value())
 
     def _refresh(self):
         spec = self._window_spec()
@@ -461,7 +464,7 @@ class _WindowPage(_Page):
         self.table.setRowCount(0)
         if probs or not markers:
             return
-        summary = pl.design_summary(self.dlg.design_scans(), markers, spec.pre, spec.post)
+        summary = api.group.design_summary(self.dlg.design_scans(), markers, spec.pre, spec.post)
         self.table.setRowCount(len(markers))
         for i, m in enumerate(markers):
             info = summary["markers"][m]
@@ -490,7 +493,7 @@ class _MetricsPage(_Page):
             "Each trial is reduced to a few numbers, and each number is analysed on its own. Baseline-corrected means "
             "the trial with the baseline mean subtracted (and, for the z-score signal, divided by the baseline's SD)."))
         self.checks = {}
-        for key in pl_group.METRICS:
+        for key in api.group.metrics:
             cb = QCheckBox(_METRIC_TEXT[key])
             cb.setChecked(True)
             cb.toggled.connect(lambda _c: self._update_enabled())
@@ -501,9 +504,9 @@ class _MetricsPage(_Page):
         grid = QGridLayout(opts)
         grid.addWidget(QLabel("Peak direction:"), 0, 0)
         self.combo_dir = QComboBox()
-        for key in pl_group.PEAK_DIRECTIONS:
+        for key in api.group.peak_directions:
             self.combo_dir.addItem(_DIRECTION_TEXT[key], userData=key)
-        self.combo_dir.setCurrentIndex(self.combo_dir.findData(pl_group.GroupSpec().peak_direction))
+        self.combo_dir.setCurrentIndex(self.combo_dir.findData(_defaults().peak_direction))
         grid.addWidget(self.combo_dir, 0, 1)
         self.lbl_dir = _wrapped("Used by the peak, the latency and the decay time. The default, the largest "
                                 "deflection either way, is what Event PETH reports.", _MUTED_STYLE)
@@ -524,16 +527,16 @@ class _MetricsPage(_Page):
         comp_grid = QGridLayout(comp)
         comp_grid.addWidget(QLabel("Correct the pairwise comparisons with:"), 0, 0)
         self.combo_correction = QComboBox()
-        for key in pl_group.CORRECTIONS:
-            self.combo_correction.addItem(pl_group.CORRECTION_LABELS[key], userData=key)
-        self.combo_correction.setCurrentIndex(self.combo_correction.findData(pl_group.GroupSpec().correction))
+        for key in api.group.corrections:
+            self.combo_correction.addItem(api.group.correction_labels[key], userData=key)
+        self.combo_correction.setCurrentIndex(self.combo_correction.findData(_defaults().correction))
         comp_grid.addWidget(self.combo_correction, 0, 1)
         comp_grid.addWidget(QLabel("Significance level:"), 1, 0)
         self.spin_alpha = QDoubleSpinBox()
         self.spin_alpha.setDecimals(3)
         self.spin_alpha.setRange(0.001, 0.5)
         self.spin_alpha.setSingleStep(0.01)
-        self.spin_alpha.setValue(pl_group.GroupSpec().alpha)
+        self.spin_alpha.setValue(_defaults().alpha)
         comp_grid.addWidget(self.spin_alpha, 1, 1)
         comp_grid.setColumnStretch(1, 1)
         lay.addWidget(comp)
@@ -551,7 +554,7 @@ class _MetricsPage(_Page):
         return [] if any(cb.isChecked() for cb in self.checks.values()) else ["Pick at least one measure."]
 
     def apply(self, spec):
-        spec.metrics = [k for k in pl_group.METRICS if self.checks[k].isChecked()]
+        spec.metrics = [k for k in api.group.metrics if self.checks[k].isChecked()]
         spec.peak_direction = self.combo_dir.currentData()
         spec.decay_fraction = self.spin_decay.value() / 100.0
         spec.correction = self.combo_correction.currentData()
@@ -584,7 +587,7 @@ class _ReviewPage(_Page):
         e = html.escape
         n_sub, n_mark = len(spec.subjects), len(spec.markers)
         direction = _DIRECTION_TEXT[spec.peak_direction].split(" (")[0].lower()
-        measures = ", ".join(pl_group.METRIC_LABELS[m] for m in spec.metrics)
+        measures = ", ".join(api.group.metric_labels[m] for m in spec.metrics)
         lines = [
             f"<b>{e(spec.group_name)}</b>: {n_sub} subjects, {n_mark} marker{'s' if n_mark != 1 else ''}",
             f"<b>Markers</b>: {e(', '.join(spec.markers))}",
@@ -594,7 +597,7 @@ class _ReviewPage(_Page):
             + (f"smoothed with a {spec.smooth_seconds:g} s moving average" if spec.smooth_seconds > 0 else "not smoothed")
             + f"; motion correction {spec.regression_method.upper()} (Options)",
             f"<b>Measures</b>: {e(measures)}; {e(direction)}; decay to {spec.decay_fraction:.0%} of the peak",
-            f"<b>Comparisons</b>: {e(pl_group.CORRECTION_LABELS[spec.correction])}, significance level {spec.alpha:g}",
+            f"<b>Comparisons</b>: {e(api.group.correction_labels[spec.correction])}, significance level {spec.alpha:g}",
             e(describe_analysis(n_mark)),
         ]
         self.lbl_summary.setText("<br>".join(lines))
@@ -602,7 +605,7 @@ class _ReviewPage(_Page):
         self.table.clear()
         self.table.setRowCount(0)
         if not problems:
-            summary = pl.design_summary(self.dlg.design_scans(), spec.markers, spec.pre, spec.post)
+            summary = api.group.design_summary(self.dlg.design_scans(), spec.markers, spec.pre, spec.post)
             self.table.setColumnCount(len(spec.markers) + 1)
             self.table.setHorizontalHeaderLabels(["Usable trials"] + list(spec.markers))
             subjects = [s["subject"] for s in spec.subjects]
@@ -635,14 +638,14 @@ class _ReviewPage(_Page):
         folder = safe_folder_name(spec.group_name)
         where = (os.path.join(base, "Group Analysis", folder) if base and folder
                  else f"a folder called '{folder}' (you will be asked where)")
-        self.lbl_out.setText(f"Run analysis saves these settings as {SETTINGS_FILENAME} in {where}, then loads each "
+        self.lbl_out.setText(f"Run analysis saves these settings as {api.group.settings_filename} in {where}, then loads each "
                              "recording, measures its trials, fits the models, and writes the tables and a report "
                              "there. It takes a few seconds per recording.")
 
 
 class GroupSetupDialog(QDialog):
-    """The wizard. On accept the settings are saved: `spec` holds the GroupSpec, `group_dir` the folder it was
-    saved in and `settings_path` the file."""
+    """The wizard. On accept `spec` holds the GroupSpec and `group_dir` the folder the group's results (and its
+    settings, which the run saves first) go in."""
 
     def __init__(self, parent, ctx, scans, base_path, store_labels=None):
         super().__init__(parent)
@@ -652,7 +655,6 @@ class GroupSetupDialog(QDialog):
         self.store_labels = dict(store_labels or {})
         self.spec = None
         self.group_dir = None
-        self.settings_path = None
 
         self.setWindowTitle("Group analysis")
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -699,8 +701,8 @@ class GroupSetupDialog(QDialog):
         return self.pages[1].selected()
 
     def build_spec(self):
-        spec = pl_group.GroupSpec(regression_method=self.ctx.settings.get("regression_method", "ols"),
-                                  store_labels=dict(self.store_labels))
+        spec = api.group.new_settings(regression_method=self.ctx.settings.get("regression_method", "ols"),
+                                      store_labels=dict(self.store_labels))
         for p in self.pages:
             p.apply(spec)
         return spec
@@ -741,33 +743,32 @@ class GroupSetupDialog(QDialog):
         group_dir = resolve_group_dir(self.ctx, self, spec.group_name)
         if group_dir is None:
             return
-        try:
-            path = write_settings(group_dir, spec, self.scans)
-        except Exception as e:
-            show_error(self.ctx, f"Could not save the settings: {e}")
-            return
-        self.spec, self.group_dir, self.settings_path = spec, group_dir, path
+        self.spec, self.group_dir = spec, group_dir
         self.accept()
 
 
 def launch_group_analysis(ctx, folders, base_path):
-    """Entry point from the multi-recording prompt (loaders/tdt.py): scan the recordings in the
+    """Entry point from the multi-recording prompt (loading/tdt.py): scan the recordings in the
     background, with a progress toast, then open the setup wizard."""
     store_labels = dict(ctx.store_labels)
+    errorlog.register_recording(base_path)
+    for folder in folders:
+        errorlog.register_recording(folder)
+    errorlog.action("group_analysis_opened", n_recordings=len(folders))
 
-    def _work(progress):
-        return scan_recordings(folders, base_path, store_labels, progress=progress)
-
-    def _on_success(scans):
+    def _on_success(answer):
+        scans = answer["scans"]
         if all(s["error"] for s in scans):
             show_error(ctx, "None of the recordings could be read:\n" + "\n".join(
                 f"{s['label']}: {s['error']}" for s in scans[:5]))
             return
         dlg = GroupSetupDialog(ctx.win, ctx, scans, base_path, store_labels)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            start_group_run(ctx, dlg.spec, dlg.group_dir)
+            start_group_run(ctx, dlg.spec, dlg.group_dir, scans=dlg.scans)
 
     def _on_error(msg):
         show_error(ctx, f"Could not scan the recordings: {msg}")
 
-    run_in_background(ctx, _work, _on_success, _on_error, label="Scanning recordings")
+    # The engine opens each recording just far enough to list its markers, length and saved splices (group.scan).
+    run_engine(ctx, "group.scan", {"folders": list(folders), "base_path": base_path, "store_labels": store_labels},
+               _on_success, _on_error, label="Scanning recordings")

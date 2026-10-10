@@ -1,116 +1,41 @@
 """
 analysis/fft.py
--------------------
-FFT viewer window — dual/triple-axis for Oxysoft (O2Hb/HHb/optional tHb),
-single-axis for TDT/Generic sources. Same click-triggered dispatch as
-AUC/Z-Score (double-click near a point after picking "FFT" from the
-toolbar's Analysis button). Mirrors auc.py's/peth.py's per-source
-branching (build a `channels` list, then one shared render loop) rather
-than special-casing Oxysoft's figure layout separately, so a channel
-either tool supports (e.g. tHb) isn't silently unreachable here too.
-Generic/double-click tools like this one deliberately analyze whichever
-signal the "Plot:" dropdown currently shows (get_active_signal) rather
-than always the normalized signal — that's reserved for the dataset-
-specific tools under Custom Statistics (Event PETH, Find Significant
-Peaks), which always analyze the corrected/normalized signal regardless
-of what's on screen.
+---------------
+FFT viewer window — one axis per channel (Oxysoft's O2Hb/HHb/optional tHb, or the single TDT/Generic signal). Same click-triggered dispatch
+as AUC/Z-Score (double-click near a point after picking "FFT" from the toolbar's Analysis button). Generic/double-click tools like this one
+deliberately analyze whichever signal the "Plot:" dropdown currently shows (get_active_signal) rather than always the normalized signal —
+that's reserved for the dataset-specific tools under Custom Statistics (Event PETH, Find Significant Peaks), which always analyze the
+corrected/normalized signal regardless of what's on screen.
+
+The analysis is the analysis engine's (the library's fft_window, see windows.py). This module prints what comes back and draws it; the
+window itself is result_window.py's.
 """
 
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QPushButton
-
-import PhysicsLibrary as pl
-
-from ..context import get_active_signal
-from ..fonts import fig_font_sizes
-from ..toasts import show_window_toast
-from .analysis_picker import add_done_button
-from .dispatch import add_stats_export_buttons, export_figure_to_file, get_window
-from ..window_fit import fit_to_screen
-
-
-def _annotate_fft_peaks(ax_f, freqs, power, color, n_peaks=3):
-    """Finds the top N peaks (pl.find_fft_peaks — the actual computation,
-    in PhysicsLibrary) and draws frequency/BPM labels for them directly
-    on the axes. The drawing itself is presentation, not analysis, so it
-    lives here rather than in PhysicsLibrary alongside the peak-finding
-    it depends on."""
-    for p in pl.find_fft_peaks(freqs, power, n_peaks=n_peaks):
-        ax_f.annotate(
-            f"{p['freq_hz']:.2f} Hz\n({p['bpm']:.0f} bpm)",
-            xy=(p['freq_hz'], p['power']),
-            xytext=(p['freq_hz'] + 0.05, p['power'] * 0.92),
-            fontsize=7, color=color, fontweight='bold',
-            arrowprops=dict(arrowstyle='->', color=color, lw=0.8),
-        )
-        ax_f.axvline(p['freq_hz'], color=color, lw=0.7, linestyle=':', alpha=0.5)
+from .. import figures
+from .result_window import run_click_analysis, show_result_window
+from .windows import UNKNOWN_COLOR, channel_colors, channel_groups, column
 
 
 def launch_fft(ctx, center_t):
-    if ctx.cache is None:
-        return
-    pre, post = get_window(ctx)
-    cache = ctx.cache
-    fs = cache['fs']
+    run_click_analysis(ctx, center_t, "FFT", "fft_window", _show_fft)
 
-    channels = []  # (label, y, color)
-    if cache.get('source') == 'Oxysoft':
-        channels.append(('Mean O2Hb', pl.mean_channels(cache['o2hb']), '#CC0000'))
-        channels.append(('Mean HHb', pl.mean_channels(cache['hhb']), '#0033CC'))
-        if 'thb' in cache:
-            channels.append(('Mean tHb', pl.mean_channels(cache['thb']), '#228B22'))
-    elif 'corr' in cache or 'raw' in cache:
-        # TDT (and any other single-signal cache carrying corr/raw) —
-        # whichever signal the "Plot:" dropdown currently displays.
-        _, label, y, color = get_active_signal(ctx)
-        channels.append((label, y, color))
-    else:
-        # Generic source: no 'signals'/'corr'/'raw' — same first-column
-        # fallback auc.py uses for a Generic multi-column file.
-        y = next(iter(cache['y_columns'].values()))
-        channels.append(('Signal', y, '#2196F3'))
 
-    last_fft_results = []  # [{"channel": str, "peaks": [{"freq_hz","power","bpm"}, ...]}, ...]
-    for label, y, color in channels:
-        freqs, power, _, _ = pl.compute_fft_slice(cache['x'], y, center_t, fs, pre=pre, post=post)
-        peaks = pl.find_fft_peaks(freqs, power) if len(freqs) > 0 else []
-        last_fft_results.append({"channel": label, "peaks": peaks, "freqs": freqs, "power": power, "color": color})
+def _show_fft(ctx, center_t, pre, post, result):
+    fs = ctx.cache['fs']
+    colors = channel_colors(ctx)
+    peak_table = result.tables["peaks"]
 
-    dlg = QDialog(ctx.win)
-    dlg.setWindowTitle(
-        f"FFT — {cache['store']}  |  centre {center_t:.1f}s  |  -{pre:.0f}s/+{post:.0f}s"
-    )
-    fit_to_screen(dlg, 700, 650)
-    layout = QVBoxLayout(dlg)
+    last_fft_results = []  # [{"channel": str, "peaks": [{"freq_hz","power","bpm"}, ...], "freqs", "power", "color"}, ...]
+    for name, rows in channel_groups(result.tables["spectrum"]):
+        found = peak_table[peak_table["Channel"] == name]
+        last_fft_results.append({
+            "channel": name, "color": colors.get(name, UNKNOWN_COLOR), "freqs": column(rows, "frequency_hz"), "power": column(rows, "power"),
+            "peaks": [{"freq_hz": float(p["Frequency (Hz)"]), "bpm": float(p["BPM"]), "power": float(p["Power"])} for _, p in found.iterrows()]})
 
-    n = len(last_fft_results)
-    fig_fft = Figure(figsize=(8, 3.5 * n), dpi=100)
-    axes = fig_fft.subplots(n, 1) if n > 1 else [fig_fft.add_subplot(111)]
-    lfs_f = 10
-    for ax_f, r in zip(axes, last_fft_results):
-        freqs, power = r["freqs"], r["power"]
-        if len(freqs) > 0:
-            ax_f.plot(freqs, power, color=r["color"], lw=1.5)
-            _annotate_fft_peaks(ax_f, freqs, power, r["color"])
-        tfs_f, lfs_f, _ = fig_font_sizes(fig_fft)
-        ax_f.set_ylabel("Power", fontweight='bold', fontsize=lfs_f)
-        ax_f.set_title(r["channel"], fontweight='bold', fontsize=tfs_f)
-        ax_f.set_xlim(0.05, fs / 2)
-        ax_f.autoscale(axis='y')
-    axes[-1].set_xlabel("Frequency (Hz)", fontweight='bold', fontsize=lfs_f)
+    fig = figures.fft_window_figure(
+        [{"channel": r["channel"], "color": r["color"], "freqs": r["freqs"], "power": r["power"]} for r in last_fft_results],
+        fs, center_t, pre, post)
 
-    fig_fft.suptitle(f"centre {center_t:.1f}s  |  -{pre:.0f}s/+{post:.0f}s", fontsize=10, color='gray')
-    fig_fft.tight_layout(rect=[0, 0.03, 1, 0.97])
-    canvas_fft = FigureCanvasQTAgg(fig_fft)
-    layout.addWidget(canvas_fft)
-
-    result_lbl = QLabel()
-    result_lbl.setFont(QFont("Consolas", 9))
-    result_lbl.setWordWrap(True)
-    result_lbl.setFrameShape(QFrame.Shape.Panel)
-    result_lbl.setStyleSheet("background-color: white; color: black; padding: 8px;")
     blocks = []
     for r in last_fft_results:
         if not r["peaks"]:
@@ -121,25 +46,12 @@ def launch_fft(ctx, center_t):
             for i, p in enumerate(r["peaks"])
         )
         blocks.append(f"[{r['channel']}]\n{peak_lines}")
-    result_lbl.setText("\n\n".join(blocks))
-    layout.addWidget(result_lbl)
 
-    btn_row = QHBoxLayout()
-    add_stats_export_buttons(
-        ctx, dlg, btn_row,
-        get_clipboard_text=lambda: result_lbl.text(),
-        csv_default_name=f"FFT_{cache['store']}_{int(center_t)}s",
+    show_result_window(
+        ctx, center_t, pre, post, name="FFT", prefix="FFT", kind="fft_window", fig=fig, report="\n\n".join(blocks),
         csv_header=["Channel", "Peak Rank", "Frequency (Hz)", "BPM", "Power"],
-        get_csv_rows=lambda: [
+        csv_rows=lambda: [
             [r["channel"], i + 1, f"{p['freq_hz']:.4f}", f"{p['bpm']:.1f}", f"{p['power']:.4f}"]
             for r in last_fft_results for i, p in enumerate(r["peaks"])
         ],
     )
-    btn_export = QPushButton("Export Plot")
-    btn_export.clicked.connect(lambda: export_figure_to_file(ctx, fig_fft, "FFT", f"{int(center_t)}s"))
-    btn_row.addWidget(btn_export)
-    add_done_button(ctx, dlg, btn_row)
-    layout.addLayout(btn_row)
-
-    show_window_toast(ctx, f"FFT at {center_t:.1f}s")
-    dlg.exec()

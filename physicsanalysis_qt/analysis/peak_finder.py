@@ -2,7 +2,7 @@
 analysis/peak_finder.py
 --------------------------
 Auto-detect statistically significant peaks in the loaded signal
-(PhysicsLibrary's find_significant_peaks / find_peak_near_events), for
+(PyATCLI's find_significant_peaks / find_peak_near_events), for
 when the externally-supplied event markers (TDT epocs, manually placed
 markers) don't actually line up with where the neural signal itself is
 doing something. Three scopes:
@@ -22,15 +22,15 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
 )
 
-import PhysicsLibrary as pl
-
-from ..background import run_in_background
-from ..context import get_normalized_signal
-from ..marker_labels import marker_display_label
-from ..toasts import show_error, show_window_toast
+from ..app import errorlog
+from ..backend.errors import BackendError
+from ..backend.recordings import recording_ref
+from ..app.background import run_engine
+from ..edit.marker_labels import marker_display_label
+from ..app.toasts import show_error, show_window_toast
 from .dispatch import add_stats_export_buttons, get_window
 from .event_peth import _group_markers_by_name
-from ..window_fit import fit_to_screen
+from ..app.window_fit import fit_to_screen
 
 _AUTO_PEAK_COLOR = "magenta"
 _MANY_PEAKS_WARNING = 300
@@ -39,6 +39,10 @@ SCOPE_WHOLE = "Whole recording"
 SCOPE_ONE_EVENT = "One specific event"
 SCOPE_ALL_SAME_NAME = "All events with a chosen name"
 SCOPE_SCAN_ALL_TYPES = "Scan every event type at once"
+
+# the scope names PyATCLI's peak_finder analysis uses
+_SCOPE_IDS = {SCOPE_WHOLE: "whole", SCOPE_ONE_EVENT: "one_event", SCOPE_ALL_SAME_NAME: "all_same_name",
+              SCOPE_SCAN_ALL_TYPES: "scan_all"}
 
 
 class _PeakFinderDialog(QDialog):
@@ -191,7 +195,7 @@ class _PeakFinderDialog(QDialog):
 class _AlignmentResultsDialog(QDialog):
     """Per-event found/not-found + latency table for the two event-scoped modes."""
 
-    def __init__(self, parent, ctx, event_name, results):
+    def __init__(self, parent, ctx, event_name, results, provenance=None):
         super().__init__(parent)
         self.setWindowTitle(f"Peak Alignment — {event_name}")
         fit_to_screen(self, 500, 400)
@@ -223,6 +227,7 @@ class _AlignmentResultsDialog(QDialog):
                  f"{r['z_score']:.4f}" if r['found'] else ""]
                 for r in results
             ],
+            provenance=provenance,
         )
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.accept)
@@ -244,10 +249,11 @@ class _ScanAllTypesResultsDialog(QDialog):
     glance which event types actually correspond to a real signal
     response before choosing what (if anything) to add to the plot."""
 
-    def __init__(self, parent, ctx, by_event):
+    def __init__(self, parent, ctx, by_event, provenance=None):
         super().__init__(parent)
         self.ctx = ctx
         self.by_event = by_event  # {name: [result dicts]}
+        self.provenance = provenance
         self.setWindowTitle("Peak Scan — All Event Types")
         fit_to_screen(self, 650, 420)
         layout = QVBoxLayout(self)
@@ -300,6 +306,7 @@ class _ScanAllTypesResultsDialog(QDialog):
                   if any(r['found'] for r in results) else "")]
                 for name, results in self.rows
             ],
+            provenance=provenance,
         )
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.accept)
@@ -308,11 +315,11 @@ class _ScanAllTypesResultsDialog(QDialog):
 
     def _view_details(self, row):
         name, results = self.rows[row]
-        dlg = _AlignmentResultsDialog(self, self.ctx, name, results)
+        dlg = _AlignmentResultsDialog(self, self.ctx, name, results, provenance=self.provenance)
         dlg.exec()
 
     def _add_all_found(self):
-        from ..plotting import simple_plot
+        from ..plot.plotting import simple_plot
         entries = [
             (r["peak_time"], r["kind"])
             for results in self.by_event.values()
@@ -335,44 +342,50 @@ def launch_peak_finder(ctx):
     if dlg.exec() != QDialog.DialogCode.Accepted:
         return
 
-    _, _, data_source, _ = get_normalized_signal(ctx)
-    time_array = ctx.cache['x']
-    fs = ctx.cache['fs']
     scope = dlg.scope
     z_threshold, include_troughs = dlg.z_threshold, dlg.include_troughs
+    errorlog.action("analysis", tool="Peak Finder", scope=scope, z_threshold=z_threshold, include_troughs=include_troughs)
 
     groups = dlg.groups
 
-    def _work(progress):
-        plan = pl.Plan(progress, [("Smoothing the signal", 10), ("Searching for peaks", 90)])
-        plan.begin("Smoothing the signal")
-        clean_signal = pl.smooth_signal(data_source, fs)
-        plan.begin("Searching for peaks")
-        if scope == SCOPE_WHOLE:
-            peaks = pl.find_significant_peaks(
-                time_array, clean_signal, z_threshold=z_threshold,
-                min_distance_sec=dlg.min_distance, include_troughs=include_troughs,
-            )
-            plan.done()
-            return peaks
-        pre, post = get_window(ctx)
-        if scope == SCOPE_SCAN_ALL_TYPES:
-            # One tick per event type (each type's own events are quick to search).
-            return {
-                name: pl.find_peak_near_events(
-                    time_array, clean_signal, times, pre, post,
-                    z_threshold=z_threshold, include_troughs=include_troughs,
-                )
-                for name, times in plan.track("Searching for peaks", groups.items())
-            }
-        return pl.find_peak_near_events(
-            time_array, clean_signal, dlg.event_times, pre, post,
-            z_threshold=z_threshold, include_troughs=include_troughs,
-            progress=plan.sub("Searching for peaks"),
-        )
+    try:
+        ref = recording_ref(ctx)
+    except BackendError as e:
+        show_error(ctx, f"Peak finding failed: {e}")
+        return
 
-    def _on_success(result):
-        from ..plotting import simple_plot
+    # The search runs in the analysis engine (compute.peaks: the normalized signal, smoothed, then the
+    # peaks): over the whole recording, or the peak nearest each of one event type's times, or each type's.
+    window = get_window(ctx)
+    if scope == SCOPE_WHOLE:
+        request = {"recording": ref, "scope": "whole", "z_threshold": z_threshold, "include_troughs": include_troughs,
+                   "min_distance_s": dlg.min_distance}
+    else:
+        events = groups if scope == SCOPE_SCAN_ALL_TYPES else {dlg.event_name or "event": [float(t) for t in dlg.event_times]}
+        request = {"recording": ref, "scope": "events", "z_threshold": z_threshold, "include_troughs": include_troughs,
+                   "events": events, "pre": window[0], "post": window[1]}
+
+    prov_params = {"scope": _SCOPE_IDS[scope], "z_threshold": float(z_threshold), "include_troughs": bool(include_troughs),
+                   "pre_s": float(window[0]), "post_s": float(window[1])}
+    if scope == SCOPE_WHOLE:
+        prov_params["min_distance_s"] = float(dlg.min_distance)
+    elif scope == SCOPE_ONE_EVENT:
+        prov_params["event_time"] = float(dlg.event_times[0])
+    elif scope == SCOPE_ALL_SAME_NAME:
+        prov_params.update(event=dlg.event_name, event_times=[float(t) for t in dlg.event_times])
+    else:
+        prov_params["event_groups"] = {name: [float(t) for t in times] for name, times in groups.items()}
+    prov = {"kind": "peak_finder", "parameters": prov_params}
+
+    def _on_success(answer):
+        from ..plot.plotting import simple_plot
+
+        if scope == SCOPE_WHOLE:
+            result = answer["peaks"]
+        elif scope == SCOPE_SCAN_ALL_TYPES:
+            result = answer["groups"]
+        else:
+            result = next(iter(answer["groups"].values()))
 
         if scope == SCOPE_WHOLE:
             peaks = result
@@ -400,7 +413,7 @@ def launch_peak_finder(ctx):
             n_types = len(result)
             n_found = sum(1 for results in result.values() for r in results if r["found"])
             show_window_toast(ctx, f"Scanned {n_types} event type(s), {n_found} aligned peak(s) found")
-            summary_dlg = _ScanAllTypesResultsDialog(ctx.win, ctx, result)
+            summary_dlg = _ScanAllTypesResultsDialog(ctx.win, ctx, result, provenance=prov)
             summary_dlg.exec()
             return
 
@@ -412,10 +425,10 @@ def launch_peak_finder(ctx):
         show_window_toast(
             ctx, f"{len(found_entries)} / {len(results)} event(s) had an aligned peak"
         )
-        results_dlg = _AlignmentResultsDialog(ctx.win, ctx, dlg.event_name, results)
+        results_dlg = _AlignmentResultsDialog(ctx.win, ctx, dlg.event_name, results, provenance=prov)
         results_dlg.exec()
 
     def _on_error(msg):
         show_error(ctx, f"Peak finding failed: {msg}")
 
-    run_in_background(ctx, _work, _on_success, _on_error, label="Finding significant peaks")
+    run_engine(ctx, "compute.peaks", request, _on_success, _on_error, label="Finding significant peaks")

@@ -13,10 +13,7 @@ Distinct from peth.py's launch_zscore_peth, which analyzes a single
 arbitrary clicked point rather than every occurrence of a named event.
 """
 
-import numpy as np
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.ticker import MaxNLocator
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -24,49 +21,24 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QWidget, QButtonGroup,
 )
 
-import PhysicsLibrary as pl
-
-from ..background import run_in_background
+from ..backend import api
+from .. import figures
+from ..app import errorlog
+from ..backend.errors import BackendError
+from ..backend.recordings import decode_arrays, recording_ref
+from ..app.background import run_engine
 from ..context import get_normalized_signal, signal_short_label
-from ..fonts import fig_font_sizes
-from ..marker_labels import marker_display_label
-from ..toasts import show_error, show_window_toast
+from ..app.toasts import show_error, show_window_toast
 from .dispatch import add_stats_export_buttons, export_figure_to_file, get_window
-from ..window_fit import fit_to_screen
-
-# Cycled (modulo) across trials in the "Trials" overlay view — tab10 +
-# tab20's paler companions, same categorical-palette idea as plotting.py's
-# _GEN_COLORS for Generic-source channels, just a longer list since trial
-# counts run higher than typical column counts.
-_TRIAL_COLORS = [
-    '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
-    '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
-]
+from ..app.window_fit import fit_to_screen
 
 
 def _group_markers_by_name(ctx):
-    """{display_name: [sorted event times]} across every event TDT
-    actually detected in this recording (ctx.cache['detected_markers']),
-    plus anything manually placed or already added to the plot
-    (ctx.cache['markers']) — deduped by (name, time) so a marker that's
-    both detected and already plotted doesn't get double-counted. This
-    intentionally does NOT require an event to already be on the plot:
-    the whole point is finding out which event types are worth plotting
-    in the first place. High/low phase markers count as separate event
-    names (their display label already differs by the ¹/⁰ suffix)."""
-    groups = {}
-    seen = set()
-    for m in ctx.cache.get('detected_markers', []) + ctx.cache['markers']:
-        name = marker_display_label(ctx, m)
-        key = (name, m['time'])
-        if key in seen:
-            continue
-        seen.add(key)
-        groups.setdefault(name, []).append(m['time'])
-    for name in groups:
-        groups[name].sort()
-    return groups
+    """{display_name: [sorted event times]} for the loaded recording, honoring the app's store
+    renames — see PyATCLI.group_markers_by_name for what is grouped and how. Deliberately
+    does NOT require an event to already be on the plot: the point is finding out which event types
+    are worth plotting in the first place."""
+    return api.markers.group_by_name(ctx.cache, ctx.store_labels)
 
 
 class _EventPethResultsDialog(QDialog):
@@ -90,7 +62,6 @@ class _EventPethResultsDialog(QDialog):
         self.last_mean_trace = None
         self.bin_width = 1.0  # snapshotted from the live field in _run() — see _bin_width()'s docstring
         self.active_view = "zscore"  # "zscore" | "trials" | "auc" | "peak" | "bins" — which overlay/export is active
-        self._colorbar = None
 
         self.setWindowTitle("Event PETH")
         fit_to_screen(self, 940, 720)
@@ -172,10 +143,8 @@ class _EventPethResultsDialog(QDialog):
         view_row.addStretch(1)
         layout.addLayout(view_row)
 
-        self.fig = Figure(figsize=(8, 7), dpi=100)
-        self.ax_heat, self.ax_line = self.fig.subplots(
-            2, 1, sharex=True, gridspec_kw={'height_ratios': [2, 1]}
-        )
+        self.fig = figures.new_event_peth_figure()
+        self.ax_heat = self.ax_line = None              # made by each draw (figures.draw_event_peth)
         self.canvas = FigureCanvasQTAgg(self.fig)
         layout.addWidget(self.canvas, stretch=1)
 
@@ -193,10 +162,11 @@ class _EventPethResultsDialog(QDialog):
             csv_default_name=lambda: f"EventPETH_{self.event_name}_{self.active_view}",
             csv_header=self._current_csv_header,
             get_csv_rows=self._current_csv_rows,
+            provenance=self._provenance,
         )
         self.btn_export = QPushButton("Export Plot")
         self.btn_export.clicked.connect(
-            lambda: export_figure_to_file(ctx, self.fig, "EventPETH", self.event_name)
+            lambda: export_figure_to_file(ctx, self.fig, "EventPETH", self.event_name, provenance=self._provenance())
         )
         btn_row.addWidget(self.btn_export)
         layout.addLayout(btn_row)
@@ -233,6 +203,14 @@ class _EventPethResultsDialog(QDialog):
         right.addWidget(self.trial_list, stretch=1)
 
         self._run(initial_event_name)
+
+    def _provenance(self):
+        """What is on screen as an analyses.py event_peth: the event, the window, the bin width, which trials are
+        checked, and the event times themselves (so a replay does not depend on the markers as they are later)."""
+        return {"kind": "event_peth", "parameters": {
+            "event": self.event_name, "pre_s": float(self.pre), "post_s": float(self.post), "bin_s": float(self.bin_width),
+            "selected_trials": [i + 1 for i in self._selected_trial_indices()],
+            "event_times": [float(t) for t in self.groups[self.event_name]]}}
 
     def _on_view_toggled(self, view_id, checked):
         # QButtonGroup fires toggled(False) for the outgoing button and
@@ -276,20 +254,21 @@ class _EventPethResultsDialog(QDialog):
         # always agree on bin width, even if the user edits the field
         # without clicking Recalculate in between — see _bin_width().
         self.bin_width = self._bin_width()
-        key, _, data_source, _ = get_normalized_signal(ctx)
+        errorlog.action("analysis", tool="Event PETH", event=event_name, n_events=len(event_times),
+                        pre_s=self.pre, post_s=self.post, bin_s=self.bin_width)
+        key, _, _, _ = get_normalized_signal(ctx)
         self.mode_str = signal_short_label(key)
-        time_array = ctx.cache['x']
-        fs = ctx.cache['fs']
-        pre, post = self.pre, self.post
+        try:
+            ref = recording_ref(ctx)
+        except BackendError as e:
+            self.combo_event.setEnabled(True)
+            show_error(ctx, f"Event PETH failed: {e}")
+            return
 
-        def _work(progress):
-            plan = pl.Plan(progress, [("Smoothing the signal", 10), ("Aligning trials", 90)])
-            plan.begin("Smoothing the signal")
-            clean_signal = pl.smooth_signal(data_source, fs)
-            return pl.compute_event_zscore_peth(time_array, clean_signal, event_times, pre, post,
-                                                progress=plan.sub("Aligning trials"))
-
-        def _on_success(result):
+        def _on_success(answer):
+            # The trial matrix was worked out by the analysis engine (compute.event_peth: the normalized signal,
+            # smoothed, each trial z-scored against its own baseline) and handed over as .npy files.
+            result = decode_arrays(answer["result"]["data"], answer["result"]["directory"], mmap=False)
             self.combo_event.setEnabled(True)
             if result["trial_matrix"].shape[0] == 0:
                 show_error(ctx, f"No usable trials for '{event_name}' — all occurrences were "
@@ -305,7 +284,9 @@ class _EventPethResultsDialog(QDialog):
             self.combo_event.setEnabled(True)
             show_error(ctx, f"Event PETH failed: {msg}")
 
-        run_in_background(ctx, _work, _on_success, _on_error, label=f"Computing Event PETH for '{event_name}'")
+        run_engine(ctx, "compute.event_peth",
+                   {"recording": ref, "event_times": [float(t) for t in event_times], "pre": float(self.pre), "post": float(self.post)},
+                   _on_success, _on_error, label=f"Computing Event PETH for '{event_name}'")
 
     def _populate_trial_list(self, result):
         """Rebuild the trial checklist (all checked) for a freshly computed
@@ -319,9 +300,9 @@ class _EventPethResultsDialog(QDialog):
         based on what else is checked, so there's no reason to recompute
         them on every checkbox toggle. Kept export-only (see the AUC/
         Peak-Latency/Bins buttons above) rather than shown in this list."""
-        self.per_trial_auc = pl.compute_auc_matrix(
+        self.per_trial_auc = api.stats.auc_matrix(
             result["time_axis"], result["trial_matrix"])["per_trial"]
-        self.per_trial_peri = pl.compute_peri_event_matrix(
+        self.per_trial_peri = api.stats.peri_event_matrix(
             result["time_axis"], result["trial_matrix"], self.post, self.bin_width)["per_trial"]
 
         self.trial_list.blockSignals(True)
@@ -484,13 +465,6 @@ class _EventPethResultsDialog(QDialog):
         return [i for i in range(self.trial_list.count())
                 if self.trial_list.item(i).checkState() == Qt.CheckState.Checked]
 
-    def _row_order(self, sub_matrix):
-        n = sub_matrix.shape[0]
-        if self.sort_combo.currentText() == self.SORT_PEAK_AMPLITUDE:
-            peak = np.abs(sub_matrix).max(axis=1) if n else np.array([])
-            return np.argsort(peak)[::-1]
-        return np.arange(n)
-
     def _redraw(self):
         if self.peth_result is None:
             return
@@ -508,7 +482,7 @@ class _EventPethResultsDialog(QDialog):
         sub_matrix = matrix[selected] if selected else matrix[:0]
         n_total = matrix.shape[0]
         n_selected = sub_matrix.shape[0]
-        mean_trace, sem_trace = pl.compute_group_stats(sub_matrix)
+        mean_trace, sem_trace = api.stats.group_stats(sub_matrix)
 
         self.lbl_trials.setText(f"{n_selected} of {n_total} trial(s)")
         self.last_mean_trace = mean_trace
@@ -517,11 +491,11 @@ class _EventPethResultsDialog(QDialog):
         # which view is active — switching to AUC/Peak/Bins and exporting
         # immediately must reflect the current trial selection, not
         # whatever was last computed while that view happened to be active.
-        self.last_group_auc = pl.compute_auc_from_trace(time_axis, mean_trace) if n_selected > 0 else \
+        self.last_group_auc = api.stats.auc_from_trace(time_axis, mean_trace) if n_selected > 0 else \
             {"total_auc": 0.0, "positive_auc": 0.0, "negative_auc": 0.0}
         g = self.last_group_auc
 
-        self.last_group_peri = pl.compute_peri_event_from_trace(
+        self.last_group_peri = api.stats.peri_event_from_trace(
             time_axis, mean_trace, self.post, self.bin_width) if n_selected > 0 else \
             {"peak_amplitude": 0.0, "latency": 0.0, "mean_bins": []}
         gp = self.last_group_peri
@@ -542,82 +516,13 @@ class _EventPethResultsDialog(QDialog):
         else:  # zscore
             self.lbl_group.setText(f"Group Z-Score trace — {n_selected} of {n_total} trial(s)")
 
-        # Must remove the colorbar before clearing ax_heat — it restores
-        # ax_heat's original (pre-colorbar) subplot geometry on removal,
-        # which breaks if ax_heat's state has already changed underneath it.
-        if self._colorbar is not None:
-            self._colorbar.remove()
-            self._colorbar = None
-        self.ax_heat.clear()
-        self.ax_line.clear()
-
-        if n_selected == 0:
-            self.ax_heat.text(0.5, 0.5, "No trials selected",
-                               ha='center', va='center', transform=self.ax_heat.transAxes)
-        else:
-            order = self._row_order(sub_matrix)
-            # Scaled to this trial set's own spread rather than a fixed range, so a quiet
-            # recording isn't washed out and a big responder isn't clipped.
-            scale = np.nanpercentile(np.abs(sub_matrix), 98) or 1.0
-            im = self.ax_heat.imshow(
-                sub_matrix[order], aspect='auto', cmap='YlGnBu_r',
-                extent=[-self.pre, self.post, n_selected, 0],
-                vmin=-scale, vmax=scale, interpolation='nearest',
-            )
-            self._colorbar = self.fig.colorbar(im, ax=self.ax_heat, fraction=0.046, pad=0.04, label="Z-score")
-
-        tfs, lfs, _ = fig_font_sizes(self.fig)
-        self.ax_heat.set_ylabel("Trial", fontweight='bold', fontsize=lfs)
-        # Trial rows are a count, not a continuous quantity — matplotlib's
-        # default locator can otherwise land on fractional ticks (e.g. 2.5)
-        # for small trial counts, which reads as meaningless for "Trial".
-        self.ax_heat.yaxis.set_major_locator(MaxNLocator(integer=True))
-        self.ax_heat.axvline(0, color='red', linestyle='--', alpha=0.7)
-
-        if self.active_view == "trials":
-            # Every checked trial's own trace, no mean/SEM — a different
-            # color per trial (cycled if there are more trials than
-            # colors), so trial-to-trial shape/timing differences are
-            # visible directly instead of collapsed into one average.
-            for local_i, orig_i in enumerate(selected):
-                self.ax_line.plot(time_axis, matrix[orig_i],
-                                   color=_TRIAL_COLORS[local_i % len(_TRIAL_COLORS)],
-                                   linewidth=1.0, alpha=0.85)
-        else:
-            self.ax_line.plot(time_axis, mean_trace, color='black', linewidth=1.5, label="Mean")
-            self.ax_line.fill_between(time_axis, mean_trace - sem_trace, mean_trace + sem_trace,
-                                        color='black', alpha=0.2, label="SEM")
-        self.ax_line.axvline(0, color='red', linestyle='--', alpha=0.7)
-
-        # View-specific overlay for the group trace — only the active
-        # toggle's overlay is drawn, matching what Export CSV currently
-        # produces (see _current_csv_rows). "zscore" (the baseline view)
-        # deliberately adds nothing beyond the mean/SEM trace above.
-        if n_selected > 0:
-            if self.active_view == "auc":
-                self.ax_line.fill_between(time_axis, mean_trace, 0, where=(mean_trace >= 0),
-                                           color='green', alpha=0.25)
-                self.ax_line.fill_between(time_axis, mean_trace, 0, where=(mean_trace <= 0),
-                                           color='red', alpha=0.25)
-            elif self.active_view == "peak":
-                self.ax_line.axvline(gp["latency"], color='gray', lw=1.0, linestyle=':', alpha=0.7)
-                self.ax_line.scatter([gp["latency"]], [gp["peak_amplitude"]],
-                                      color='red', zorder=5, s=35, label="Peak")
-            elif self.active_view == "bins":
-                for b in gp["mean_bins"]:
-                    self.ax_line.axvline(b["bin_start"], color='gray', lw=0.5, alpha=0.3)
-
-        self.ax_line.set_xlim([-self.pre, self.post])
-        self.ax_line.set_ylabel(f"Z-Score ({self.mode_str})", fontweight='bold', fontsize=lfs)
-        self.ax_line.set_xlabel("Time from Event (s)", fontweight='bold', fontsize=lfs)
-        if self.active_view != "trials":
-            # Trials view has no labeled artists (a legend entry per trial
-            # would be unreadable past a handful of trials) — color is
-            # identified via the trial list on the right instead.
-            self.ax_line.legend(fontsize=lfs * 0.8, loc='upper right')
-
-        self.fig.suptitle(self.e_title.text() or f"Event PETH — {self.event_name}", fontsize=tfs, fontweight='bold')
-        self.fig.tight_layout(rect=[0, 0, 1, 0.96])
+        # The figure is figures/draw.py's, the same one Open Results draws from the exported CSV: the checked trials only,
+        # each row labelled with the trial's own number.
+        self.ax_heat, self.ax_line = figures.draw_event_peth(
+            self.fig, time_axis=time_axis, trial_matrix=sub_matrix, trial_numbers=[i + 1 for i in selected],
+            pre=self.pre, post=self.post, bin_s=self.bin_width, view=self.active_view,
+            sort_by_peak=self.sort_combo.currentText() == self.SORT_PEAK_AMPLITUDE, signal_label=self.mode_str,
+            title=self.e_title.text(), event_name=self.event_name)
         self.canvas.draw_idle()
 
 

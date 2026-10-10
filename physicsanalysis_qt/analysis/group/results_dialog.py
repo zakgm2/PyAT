@@ -21,16 +21,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-import PhysicsLibrary as pl
-from PhysicsLibrary.analysis.group import METRIC_LABELS
-
-from ...context import export_file
-from ...toasts import show_error, show_window_toast
-from ...window_fit import fit_to_screen
-from .plots import (
-    MeasuresDisplayOptions, build_all_figures, build_measures_figure,
-    figure_title_text, set_figure_title_text,
-)
+from ...backend import api
+from ... import figures
+from ...export.figure_export import export_figure
+from ...app.toasts import show_error, show_window_toast
+from ...app.window_fit import fit_to_screen
 
 _FIGURE_LABELS = {"traces": "Mean traces", "measures": "Measures by marker", "diagnostics": "Model diagnostics"}
 
@@ -84,7 +79,7 @@ class _ReportTab(QWidget):
         font = QFont("Consolas", 9)
         font.setStyleHint(QFont.StyleHint.Monospace)
         self.text.setFont(font)
-        self.text.setPlainText(pl.group_report_text(results))
+        self.text.setPlainText(api.group.report_text(results))
         layout.addWidget(self.text, stretch=1)
 
         row = QHBoxLayout()
@@ -114,8 +109,8 @@ class _FiguresTab(QWidget):
         self.ctx = ctx
         self.results = results
         self.group_dir = group_dir
-        self.figures = build_all_figures(results)
-        self.measure_options = MeasuresDisplayOptions()
+        self.figures = figures.build_all_figures(results)
+        self.measure_options = figures.MeasuresDisplayOptions()
         self._custom_titles = {}  # {figure key: user-typed text} — see _on_title_edited
 
         layout = QVBoxLayout(self)
@@ -166,7 +161,7 @@ class _FiguresTab(QWidget):
         layout.addLayout(row)
 
         if self.figures:
-            self.e_title.setText(figure_title_text(next(iter(self.figures.values()))))
+            self.e_title.setText(figures.figure_title_text(next(iter(self.figures.values()))))
         else:
             self.combo.setEnabled(False)
             self.btn_export.setEnabled(False)
@@ -180,7 +175,7 @@ class _FiguresTab(QWidget):
         self.combo_measure = QComboBox()
         self.combo_measure.addItem("All (grid)", userData=None)
         for m in self.results.spec.metrics:
-            self.combo_measure.addItem(METRIC_LABELS.get(m, m), userData=m)
+            self.combo_measure.addItem(api.group.metric_labels.get(m, m), userData=m)
         self.combo_measure.currentIndexChanged.connect(self._redraw_measures)
         row0.addWidget(self.combo_measure)
         row0.addStretch(1)
@@ -239,7 +234,7 @@ class _FiguresTab(QWidget):
         self.stack.setMinimumSize(*_min_canvas_size(self.figures[key]))
         if self.customize_box is not None:
             self.customize_box.setVisible(key == "measures")
-        self.e_title.setText(self._custom_titles.get(key) or figure_title_text(self.figures[key]))
+        self.e_title.setText(self._custom_titles.get(key) or figures.figure_title_text(self.figures[key]))
         self._propagate_size_change()
 
     def _on_title_edited(self):
@@ -248,11 +243,11 @@ class _FiguresTab(QWidget):
             return
         text = self.e_title.text()
         self._custom_titles[key] = text
-        set_figure_title_text(self.figures[key], text)
+        figures.set_figure_title_text(self.figures[key], text)
         self.canvases[key].draw()
 
     def _redraw_measures(self, *_args):
-        self.measure_options = MeasuresDisplayOptions(
+        self.measure_options = figures.MeasuresDisplayOptions(
             show_samples=self.chk_samples.isChecked(),
             show_box=self.chk_box.isChecked(),
             marker_labels={
@@ -262,11 +257,11 @@ class _FiguresTab(QWidget):
             legend_visible=self.chk_legend.isChecked(),
             legend_position=self.combo_legend_pos.currentData(),
         )
-        new_fig = build_measures_figure(self.results, self.measure_options, measure=self.combo_measure.currentData())
+        new_fig = figures.build_measures_figure(self.results, self.measure_options, measure=self.combo_measure.currentData())
         custom_title = self._custom_titles.get("measures")
         if custom_title is not None:
-            set_figure_title_text(new_fig, custom_title)
-        self.e_title.setText(custom_title or figure_title_text(new_fig))
+            figures.set_figure_title_text(new_fig, custom_title)
+        self.e_title.setText(custom_title or figures.figure_title_text(new_fig))
         self.figures["measures"] = new_fig
         old_canvas = self.canvases["measures"]
         index = self.stack.indexOf(old_canvas)
@@ -297,14 +292,8 @@ class _FiguresTab(QWidget):
         fig = self.figures[key]
         ts = datetime.now().strftime("%H%M%S")
         # dest_dir always wins (see context.export_file) — this always lands next to the run's own
-        # auto-saved figure_<key>.png/.pdf, whatever Options -> Output folder currently says, so the
-        # filter string below (which would only matter for a save dialog) never actually gets used.
-        export_file(
-            self.ctx, self, "Export Figure", f"figure_{key}_{ts}.png",
-            "PNG Image (*.png);;PDF Document (*.pdf);;SVG Vector (*.svg)",
-            lambda path: fig.savefig(path, dpi=300, bbox_inches="tight"),
-            dest_dir=self.group_dir,
-        )
+        # auto-saved figure_<key>.png/.pdf, whatever Options -> Output folder currently says.
+        export_figure(self.ctx, fig, "Group", parent=self, stem=f"figure_{key}_{ts}", dest_dir=self.group_dir)
 
 
 class GroupResultsDialog(QDialog):

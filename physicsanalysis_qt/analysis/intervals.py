@@ -18,6 +18,9 @@ No special-casing for phase is needed — both columns are computed the
 same generic way (diff against the previous timestamp in the relevant
 sequence), and duration falls out of that automatically wherever high/
 low pairs happen to alternate.
+
+The intervals are the library's event_intervals analysis, run by the analysis engine on the markers the window holds (analysis/windows.py);
+this module shows them and exports the table.
 """
 
 import csv
@@ -28,11 +31,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QHeaderView,
 )
 
-import PhysicsLibrary as pl
-
+from ..app import errorlog
 from ..context import export_file
-from ..toasts import show_error, show_window_toast
-from ..window_fit import fit_to_screen
+from ..app.toasts import show_error
+from .windows import request_analysis
+from ..app.window_fit import fit_to_screen
 
 
 class IntervalsDialog(QDialog):
@@ -42,9 +45,10 @@ class IntervalsDialog(QDialog):
     _HEADERS = ["Time (s)", "Store", "Label", "Phase",
                 "Δt since prev. (same store)", "Δt since prev. (any marker)"]
 
-    def __init__(self, ctx, rows):
+    def __init__(self, ctx, rows, markers=None):
         super().__init__(ctx.win)
         self.rows = rows
+        self.markers = markers or []
         self.setWindowTitle("Event Intervals")
         fit_to_screen(self, 720, 480)
         layout = QVBoxLayout(self)
@@ -55,7 +59,7 @@ class IntervalsDialog(QDialog):
         table.setHorizontalHeaderLabels(self._HEADERS)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        from ..marker_labels import store_display_name
+        from ..edit.marker_labels import store_display_name
         for r, row in enumerate(rows):
             table.setItem(r, 0, QTableWidgetItem(f"{row['time']:.3f}"))
             table.setItem(r, 1, QTableWidgetItem(store_display_name(ctx, row['store'])))
@@ -93,14 +97,33 @@ class IntervalsDialog(QDialog):
 
         ts = datetime.datetime.now().strftime("%H%M%S")
         store_name = self.ctx.cache.get('store', 'Data') if self.ctx.cache else 'Data'
+        marks = [{k: m.get(k) for k in ("time", "store", "label", "phase")} for m in self.markers]
         export_file(self.ctx, self, "Export Event Intervals",
-                     f"EventIntervals_{store_name}_{ts}.csv", "CSV (*.csv);;Text (*.txt)", _write)
+                     f"EventIntervals_{store_name}_{ts}.csv", "CSV (*.csv);;Text (*.txt)", _write,
+                     provenance={"kind": "event_intervals", "parameters": {"markers": marks}})
+
+
+def _gap(value):
+    """A time since the previous marker, or None for the first of its kind (JSON null / NaN)."""
+    return None if value is None or value != value else float(value)
+
+
+def interval_rows(table):
+    """The dialog's rows from the engine's `intervals` table."""
+    return [{"time": float(r["time_s"]), "store": r["store"], "label": r["label"], "phase": r["phase"] or "",
+             "dt_store": _gap(r["dt_since_prev_same_store_s"]), "dt_global": _gap(r["dt_since_prev_any_s"])}
+            for _, r in table.iterrows()]
 
 
 def launch_intervals(ctx):
     if ctx.cache is None or not ctx.cache.get('markers'):
         show_error(ctx, "No markers currently on the plot to measure.")
         return
-    rows = pl.compute_marker_intervals(ctx.cache['markers'])
-    dlg = IntervalsDialog(ctx, rows)
-    dlg.exec()
+    markers = list(ctx.cache['markers'])
+
+    def _show(result):
+        rows = interval_rows(result.tables["intervals"])
+        errorlog.action("analysis", tool="Event Intervals", n_markers=len(rows))
+        IntervalsDialog(ctx, rows, markers=markers).exec()
+
+    request_analysis(ctx, "event_intervals", {}, _show)

@@ -1,9 +1,2 @@
-numpy
-matplotlib
-scipy
-openpyxl
-pandas
-PyQt6
-pyqtgraph
-vispy==0.16.2
-ZaksPhysicsLibrary
+# The dependencies are listed once, in pyproject.toml; this installs them with the app itself, in place (edits to the code take effect).
+-e .

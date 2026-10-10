@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
 
 from .event_peth import launch_event_peth
 from .peak_finder import launch_peak_finder
-from ..window_fit import fit_to_screen
+from ..app.window_fit import fit_to_screen
 
 _CUSTOM_TOOLS = [
     {

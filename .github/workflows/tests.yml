@@ -1,0 +1,62 @@
+name: Tests
+
+# Runs PyAT's automated tests (tests/) on every push to main and on every pull request, against three versions of the analysis library it talks to:
+#
+#   floor    the oldest PyATCLI this PyAT says it works with (the PyATCLI>= line of pyproject.toml)
+#   latest   the newest one released on PyPI
+#   main     the library's main branch, so a library change that the app cannot live with is seen before that library is released
+#
+# The app and the library are separate programs that meet at the analysis engine; backend/contract.py is what the app needs of it, and these jobs are
+# where a mismatch shows. (While the app needs a library that is not released yet, floor and latest fail until it is: release the library first, then
+# raise the floor in pyproject.toml.) Run the same thing locally from the repo root with:
+#   python -m unittest discover -s tests -t . -v
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:  # manual "Run workflow" button
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        library: [floor, latest, main]
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen   # no display on the runner: Qt draws into memory
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # What the app and the library import at load time. sentence-transformers (and so torch, ~2 GB) is only imported by the text-embedding features,
+      # which the tests stand in for, so it is left out to keep this job fast; the library itself is installed below with --no-deps for the same reason.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=2.0" scipy tdt pandas openpyxl statsmodels scikit-learn tqdm matplotlib packaging PyQt6 pyqtgraph
+
+      - name: Install PyATCLI (${{ matrix.library }})
+        shell: bash
+        run: |
+          case "${{ matrix.library }}" in
+            floor)
+              floor=$(python -c "import re, tomllib; deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']; print(next(re.search(r'>=([^\s,;]+)', d).group(1) for d in deps if d.startswith('PyATCLI')))")
+              echo "the floor is $floor"
+              python -m pip install --no-deps "PyATCLI==$floor"
+              ;;
+            latest)
+              python -m pip install --no-deps --upgrade PyATCLI
+              ;;
+            main)
+              python -m pip install --no-deps "git+https://github.com/zakgm2/PyATCLI.git@main"
+              ;;
+          esac
+          python -c "import PyATCLI; print('PyATCLI', PyATCLI.__version__)"
+
+      # Run from the repo root so `import physicsanalysis_qt` picks up this checkout.
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v

@@ -13,13 +13,16 @@ import json
 import os
 from pathlib import Path
 
-from . import outputs
+from .app import errorlog
+from .backend import api
+from . import figures
+from .export import outputs
 
 _MARKER_COLORS = ["green", "red", "blue", "orange", "purple", "black"]
 
-_PHI = 1.6180339887  # golden ratio
-
 _SETTINGS_PATH = Path.home() / ".physicsanalysis" / "settings.json"
+
+PLOT_ENGINES = ("matplotlib", "pyqtgraph")
 
 
 def load_settings():
@@ -30,6 +33,8 @@ def load_settings():
         settings.update({k: v for k, v in saved.items() if k in settings})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    if settings["plot_engine"] not in PLOT_ENGINES:        # e.g. "vispy", an engine that no longer exists
+        settings["plot_engine"] = default_settings()["plot_engine"]
     return settings
 
 
@@ -40,19 +45,8 @@ def save_settings(settings):
 
 
 def default_plot_attrs():
-    return {
-        "title":       None,
-        "xlabel":      None,
-        "ylabel":      None,
-        "title_fs":    24,
-        "xlabel_fs":   16,
-        "ylabel_fs":   16,
-        "leg_fs":      14,
-        "leg_loc":     "upper left",
-        "leg_entries": None,
-        "bold":        True,
-        "line_colors": {},  # {legend entry name: "#rrggbb"} — user overrides, see trace_color()
-    }
+    """What Edit Graph Attributes starts from (figures/view.py)."""
+    return figures.default_plot_attrs()
 
 
 def default_settings():
@@ -62,9 +56,12 @@ def default_settings():
         "output_folder":       "",  # "" = fall back to last-opened folder, then default_folder — see get_export_dir()
         "decimate_max_points": 2000,
         "background_loading":  True,
-        "plot_engine":         "matplotlib",  # "matplotlib" | "pyqtgraph" | "vispy"
+        "plot_engine":         "matplotlib",  # "matplotlib" | "pyqtgraph"
         "theme":               "light",       # "light" | "dark"
-        "regression_method":   "ols",         # "ransac" | "huber" | "ols" — TDT motion correction, see PhysicsLibrary.REGRESSION_METHODS
+        "regression_method":   "ols",         # "ransac" | "huber" | "ols" — TDT motion correction, see PyATCLI.REGRESSION_METHODS
+        "save_provenance":     True,          # a <export>.provenance.json beside every export — see export/export_provenance.py
+        "log_file_paths":      False,         # error log: True puts real file/folder names in it (off: <path-xxxxxx> tokens) — see app/errorlog.py
+        "figure_export":       {},            # the Export Figure dialog's last choices (format, dpi, ...) — see export/figure_export.py
     }
 
 
@@ -94,16 +91,6 @@ class AppState:
         self._pg_axis_probe = None    # (left_axis_w, bottom_axis_h) cache — see sync_pg_margins
         self.pg_hover_scatter = None
 
-        # VisPy (OpenGL, GPU-native) engine — only populated if that
-        # engine is used. Built incrementally alongside pg_* above as
-        # vispy_engine.py grows (see the VisPy build-stage plan).
-        self.vispy_canvas = None        # vispy.scene.SceneCanvas
-        self.vispy_view = None          # grid.add_view() result
-        self.vispy_line_visuals = []    # (Line visual, full_x, full_y, raw_name)
-        self.vispy_legend_widget = None # hand-built Qt overlay, not part of the scene
-        self.vispy_marker_lines = []    # (Line visual, Text visual, marker_dict)
-        self._vispy_press_pos = None    # (x, y) screen pixel — click-vs-drag detection
-        self._vispy_press_button = None
 
         # Toolbar widgets (assigned in ui/toolbar.py)
         self.btn_analysis = None
@@ -125,7 +112,7 @@ class AppState:
 
         # Store id -> renamed display name (e.g. 'PP1_' -> 'Left Lever'),
         # set via right-click Edit Marker's "rename all" toggle — see
-        # marker_labels.py. The store id itself never changes, only how
+        # edit/marker_labels.py. The store id itself never changes, only how
         # it's displayed everywhere (plot, dialogs, Event Intervals table).
         self.store_labels = {}
 
@@ -138,18 +125,21 @@ class AppState:
         # List of {"mode": ..., "start": ..., "end": ...}, one per splice
         # currently applied, in the order they were applied — several can
         # stack (e.g. removing more than one artifact from the same
-        # recording). What save_splice() (analysis/splice.py) writes to
+        # recording). What Save Changes (edit/sidecar.py) writes to
         # the JSON saves/ sidecar. Empty when no splice is active.
         self._active_splices = []
-        # Ctrl+Z stack (undo.py) — one snapshot per marker/splice-mutating action, most recent
+        # {signal key: the name the user gave it} for the loaded recording — what Save Changes writes to
+        # signal_labels.json (edit/sidecar.py), and what a load restores from it. Empty if none were renamed.
+        self._signal_renames = {}
+        # Ctrl+Z stack (edit/undo.py) — one snapshot per marker/splice-mutating action, most recent
         # last. Popped and restored wholesale by undo.undo(), not a bespoke inverse per action.
         self._undo_stack = []
-        # Set by analysis/splice.py's start_splice_flow() while the user
+        # Set by edit/splice.py's start_splice_flow() while the user
         # is choosing what kind of splice, read by apply_splice_at_points().
         self._pending_splice_mode = None
         # True from a successful start_splice_flow() until the two clicks
         # it's waiting for are both in (apply_splice_at_points) — the
-        # click handlers (interaction.py, pg_interaction.py) check this
+        # click handlers (plot/interaction.py, plot/pg_interaction.py) check this
         # directly — it's separate from analysis_mode above, since only the
         # sidebar's scissors icon starts a splice, not the Analysis button.
         self.splice_click_mode = False
@@ -159,7 +149,7 @@ class AppState:
         # TDT-only analysis dialog) currently shows — e.g. "normalized",
         # "isosbestic", "main_driver". Only meaningful for a cache that
         # actually has a 'signals' map; see get_active_signal() below.
-        # Reset to "normalized" on every fresh load (loaders/tdt.py) so a
+        # Reset to "normalized" on every fresh load (loading/tdt.py) so a
         # previous dataset's selection (e.g. "isosbestic") never silently
         # carries over to one that doesn't have that channel.
         self.plot_signal = "normalized"
@@ -168,20 +158,20 @@ class AppState:
         # tools still go through plot_signal (above) alone, see get_active_signal()'s docstring.
         self.plot_signals = {"normalized"}
         self.plot_signal_row = None          # QWidget row wrapping the dropdown button below
-        self.plot_signal_button = None       # toolbar "Plot:" dropdown button, see plot_signal.py
+        self.plot_signal_button = None       # toolbar "Plot:" dropdown button, see plot/plot_signal.py
         self.plot_signal_menu = None         # the button's QMenu of checkboxes
         self.plot_signal_checkboxes = {}     # {key: QCheckBox}, inside plot_signal_menu
         self.show_grid = True
         self.plot_attrs = default_plot_attrs()
 
-        # Text field study data (see loaders/text_field_study.py) — a
+        # Text field study data (see fieldstudy/open_study.py) — a
         # pandas DataFrame, not the x/y/markers shape ctx.cache holds for
         # every signal-plot source, so it gets its own attribute rather
         # than overloading ctx.cache (which plotting/marker/analysis code
         # throughout the app assumes has that shape).
         self.study_data = None
         self.study_data_path = None
-        self.study_data_config = None  # the field_study_config.py dict used for this load
+        self.study_data_config = None  # the fieldstudy/config.py dict used for this load
 
         # (engine, generation) the view was last reset-to-fit for. Redraws
         # triggered by things that aren't a fresh data load (grid toggle,
@@ -207,7 +197,7 @@ class AppState:
 
         # Marker mode
         self.marker_mode = False
-        self.marker_stamp = {"label": "Marker", "color": "green", "fontsize": 8}
+        self.marker_stamp = api.saved.default_marker()
 
         # Hover / blit
         self.tracker_dots = []
@@ -221,25 +211,25 @@ class AppState:
         self.press_x = None
         self.press_y = None
         # True while RectangleSelector's own drag-to-zoom is in progress
-        # (see interaction.py's on_press/on_motion/on_release) — suppresses
+        # (see plot/interaction.py's on_press/on_motion/on_release) — suppresses
         # the hover tracker's own blit for the duration so the two blit
         # systems don't fight over the same canvas region.
         self._rect_dragging = False
         self._last_pan_draw_time = 0.0
-        # Right-click-and-hold on a marker's label (matplotlib: interaction.py; PyQtGraph:
-        # pg_interaction.py) — moves just that label up/down the marker's own line. None when no
+        # Right-click-and-hold on a marker's label (matplotlib: plot/interaction.py; PyQtGraph:
+        # plot/pg_interaction.py) — moves just that label up/down the marker's own line. None when no
         # drag is in progress; the marker dict being dragged while one is.
         self._dragging_label = None
         self._dragging_label_before = None  # undo.snapshot() taken at drag-start
-        self._marker_label_artists = []  # matplotlib: (marker dict, Text artist), see plotting.py
-        self._marker_label_lines = []    # PyQtGraph: (marker dict, InfiniteLine), see pg_engine.py
+        self._marker_label_artists = []  # matplotlib: (marker dict, Text artist), see plot/plotting.py
+        self._marker_label_lines = []    # PyQtGraph: (marker dict, InfiniteLine), see plot/pg_engine.py
 
-        # Highlighter tool (analysis/highlight.py) — click-to-arm two-click flow, same shape as
+        # Highlighter tool (edit/highlight.py) — click-to-arm two-click flow, same shape as
         # Splice's own splice_click_mode/_pending_splice_mode below.
         self.highlight_click_mode = False
         self._pending_highlight_color = None
 
-        # Text tool (analysis/text_annotation.py) — click-to-place, then right-click-and-hold to
+        # Text tool (edit/text_annotation.py) — click-to-place, then right-click-and-hold to
         # drag an existing one, or a plain right-click (no hold) to delete it.
         self.text_mode = False
         self.btn_text_tool = None  # toolbar icon button, see ui/edit_toolbar.py
@@ -257,7 +247,7 @@ class AppState:
         self.slope_clicks = []
 
         # Manual double-click detection for the matplotlib canvas (see
-        # interaction.py's on_press) — matplotlib's own event.dblclick can
+        # plot/interaction.py's on_press) — matplotlib's own event.dblclick can
         # miss pairs because RectangleSelector's press handler also sees
         # the first click of a would-be double-click before we know it's
         # part of one, occasionally leaving its internal state out of sync
@@ -277,18 +267,37 @@ class AppState:
         self._legend_entries = []  # list of label strings, in plotted order
         self._trace_default_colors = {}  # legend entry name -> color the engines drew it in by default
 
-        # The one toast on screen (toasts.py keeps it to one at a time) and
+        # The one toast on screen (app/toasts.py keeps it to one at a time) and
         # the timer that will dismiss it, plus the separate pinned panel
         # (message + button, bottom-left) that toasts never touch.
         self._toast = None
         self._toast_timer = None
         self._pinned_panel = None
         self._toast_repositioner = None
-        self._progress_toast = None  # the ProgressToast of the slow action running now, if any (toasts.py)
+        self._progress_toast = None  # the ProgressToast of the slow action running now, if any (app/toasts.py)
 
-        # Background loading (Options: "Load data files on a background thread")
-        self._bg_thread = None
-        self._bg_worker = None
+        # Options: "Keep the window responsive while the analysis engine works" (background_loading)
+
+        # The analysis engine (backend/): a second process that holds the open recordings and runs
+        # PyATCLI's operations, so none of it runs on this thread. Created on first use (the
+        # `engine` property below); run_qt.py starts it while the splash is up. recording_id is the
+        # engine's id for the loaded recording (None when the loaded source is not one it holds), and
+        # recording_generation the engine start that id belongs to (backend/recordings.py).
+        self._engine = None
+        self.recording_id = None
+        self.recording_generation = None
+        self.recording_method = 'ols'    # the regression method the engine opened it with (a splice re-fits dF/F with the same one)
+        self._bg_request = None   # the engine request running now, if any (background.run_engine)
+        self._bg_bridge = None
+        self._bg_extra = set()    # the bridges of requests that run beside it (Save Changes, provenance records: exclusive=False)
+
+    @property
+    def engine(self):
+        """The EngineClient (backend/engine_client.py), created on first use. PYAT_ENGINE=inprocess runs it on a thread of this process."""
+        if self._engine is None:
+            from .backend import make_engine
+            self._engine = make_engine()
+        return self._engine
 
 
 def trace_color(ctx, key, default):
@@ -312,7 +321,7 @@ def get_active_signal(ctx):
     against — ctx.plot_signal tracks whichever was checked/clicked most recently, so it's always
     the one you were most recently looking at, ticked or not.
 
-    cache['signals'] is a dict built by the loader (see loaders/tdt.py)
+    cache['signals'] is a dict built by the loader (see loading/tdt.py)
     mapping a plot-option key ("normalized", "isosbestic", "main_driver",
     ...) to {"label", "y", "color"} — deliberately not hardcoded to
     exactly those three: a recording with no isosbestic reference stream
@@ -347,6 +356,15 @@ def get_checked_signals(ctx):
     return [(key, sig) for key, sig in signals.items() if key in checked]
 
 
+def set_text_override(ctx, key, text):
+    """Records the user's own main-plot title / x label / y label (key: "title", "xlabel" or "ylabel") in
+    ctx.plot_attrs. Text identical to what the plot generates anyway is no override at all (None), so the plot
+    keeps following whatever it generates — a renamed signal is part of the automatic title, and a title that
+    was pinned by retyping it would go on showing the old name."""
+    auto = {"title": ctx._last_title, "xlabel": ctx._last_xlabel, "ylabel": ctx._last_ylabel}[key]
+    figures.attributes.set_text_override(ctx.plot_attrs, key, text, auto)               # the rule: text that is just the plot's own is no override
+
+
 def get_normalized_signal(ctx):
     """Like get_active_signal, but always resolves to the normalized
     (dF/F) trace regardless of what ctx.plot_signal / the main plot's
@@ -358,13 +376,9 @@ def get_normalized_signal(ctx):
     using unchanged so the main plot still honors the dropdown.
     """
     cache = ctx.cache
+    key, label, y = api.recording.normalized_signal(cache)
     signals = cache.get('signals')
-    if not signals:
-        y = cache['corr'] if 'corr' in cache else cache['raw']
-        return "normalized", "dF/F (corrected)", y, 'blue'
-    key = "normalized" if "normalized" in signals else next(iter(signals))
-    sig = signals[key]
-    return key, sig['label'], sig['y'], sig['color']
+    return key, label, y, (signals[key]['color'] if signals else 'blue')
 
 
 def get_export_dir(ctx):
@@ -380,10 +394,11 @@ def get_export_dir(ctx):
 
 
 def export_file(ctx, parent, title, default_filename, filter_str, write_fn,
-                dest_dir=None, recording_type=None, recording_source=None):
+                dest_dir=None, recording_type=None, recording_source=None, provenance=None):
     """Saves an export (a figure image or a CSV) to disk. write_fn(path)
     does the actual writing — called once a destination is settled,
-    either way below.
+    either way below. It may return a list of the other files it wrote
+    (a figure's data CSV, say): the provenance record lists them as outputs.
 
     If settings["output_folder"] is set (Options → Output Folder), saves
     straight there — into a folder for the current recording's data type,
@@ -408,10 +423,16 @@ def export_file(ctx, parent, title, default_filename, filter_str, write_fn,
         isn't in ctx.cache (PT2, the text field study tools — everything
         else already has ctx.cache['source']/['source_path'] and needs
         neither passed). Ignored if dest_dir is given.
+    provenance : {"kind", "parameters", "notes"} describing what was run to
+        make this export (kind: one of PyATCLI.analyses.kinds() for an
+        analysis `reproduce` can replay). Written beside the export as
+        <name>.provenance.json (export/export_provenance.py) unless Options turns
+        that off; an export that passes nothing still gets a record of the
+        recording and the software.
     """
     from PyQt6.QtWidgets import QFileDialog
 
-    from .toasts import show_error, show_window_toast
+    from .app.toasts import show_error, show_window_toast
 
     if dest_dir is not None:
         folder = dest_dir
@@ -433,11 +454,20 @@ def export_file(ctx, parent, title, default_filename, filter_str, write_fn,
             parent, title, os.path.join(get_export_dir(ctx), default_filename), filter_str)
         if not path:
             return
+    errorlog.action("export", file_type=os.path.splitext(path)[1].lstrip(".").lower(), to_output_folder=folder is not None)
     try:
-        write_fn(path)
+        written = write_fn(path)
     except Exception as e:
         show_error(ctx, f"Export failed: {e}")
         return
+    # The engine writes the provenance record beside the export (unless Options turned that off).
+    if ctx.settings.get("save_provenance", True):
+        try:
+            from .export import export_provenance
+            export_provenance.write_beside(ctx, path, provenance, source_path=recording_source,
+                                           extra_outputs=written if isinstance(written, (list, tuple)) else ())
+        except Exception:                          # noqa: BLE001 - the export itself succeeded; say so, and log why there is no record
+            errorlog.error("Could not write the provenance record beside an export", exc_info=True)
     show_window_toast(ctx, f"Saved {os.path.basename(path)}")
 
 

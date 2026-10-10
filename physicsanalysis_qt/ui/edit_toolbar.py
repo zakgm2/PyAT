@@ -17,14 +17,12 @@ from PyQt6.QtCore import Qt, QRect
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QMessageBox, QMenu
 from PyQt6.QtGui import QFont, QFontMetrics, QPainter, QPalette
 
-from ..interaction import reset_zoom
-from ..markers import toggle_marker_mode
-from ..sidecar import save_markers, save_highlights, save_text_annotations, clear_json_saves
-from ..analysis.splice import (
-    restore_full_recording, is_spliced, save_splice, open_splice_manager, start_splice_flow,
-)
-from ..analysis.highlight import start_highlight_flow
-from ..analysis.text_annotation import toggle_text_mode
+from ..plot.interaction import reset_zoom
+from ..edit.markers import toggle_marker_mode
+from ..edit.sidecar import save_changes, clear_json_saves
+from ..edit.splice import restore_full_recording, is_spliced, open_splice_manager, start_splice_flow
+from ..edit.highlight import start_highlight_flow
+from ..edit.text_annotation import toggle_text_mode
 from ..analysis.intervals import launch_intervals
 
 _ICON_SIZE = 44
@@ -103,7 +101,7 @@ def _on_undo_all_clicked(ctx):
         return
     reply = QMessageBox.question(
         ctx.win, "Undo All Changes",
-        "This discards every marker/splice change, including anything already "
+        "This discards every marker, splice and signal-name change, including anything already "
         "saved via Save Changes — clears the JSON saves folder's contents (the "
         "folder itself stays) and re-reads the recording from disk. The original "
         "raw data file/folder is never touched by anything in this app. "
@@ -112,8 +110,7 @@ def _on_undo_all_clicked(ctx):
         QMessageBox.StandardButton.No,
     )
     if reply == QMessageBox.StandardButton.Yes:
-        clear_json_saves(ctx)
-        _reload_current(ctx)
+        clear_json_saves(ctx, on_done=lambda: _reload_current(ctx))        # the engine clears the folder, then the recording is read again
 
 
 def build_edit_toolbar(ctx):
@@ -147,7 +144,7 @@ def build_edit_toolbar(ctx):
     content_layout.addWidget(btn_intervals)
 
     # Add Marker — reuses the existing ctx.btn_add_marker contract:
-    # toggle_marker_mode() (markers.py) sets its text/style directly to
+    # toggle_marker_mode() (edit/markers.py) sets its text/style directly to
     # reflect placement-mode state (e.g. "Placing 'X'…"), unchanged by
     # moving the button here — it'll just show that text in a small
     # square instead of a full-width button.
@@ -180,14 +177,13 @@ def build_edit_toolbar(ctx):
     content_layout.addWidget(ctx.btn_text_tool)
 
     btn_save_changes = _icon_button(
-        "💾", "Save Changes — writes current markers, highlights, text and any active splice "
-              "to JSON files next to the recording, doesn't touch the original raw data")
-    btn_save_changes.clicked.connect(
-        lambda: (save_markers(ctx), save_highlights(ctx), save_text_annotations(ctx), save_splice(ctx)))
+        "💾", "Save Changes — writes current markers, highlights, text, signal names and any active "
+              "splice to JSON files next to the recording, doesn't touch the original raw data")
+    btn_save_changes.clicked.connect(lambda: save_changes(ctx))
     content_layout.addWidget(btn_save_changes)
 
     btn_undo_all = _icon_button(
-        "↺", "Undo All Changes — discards marker/splice changes since the last "
+        "↺", "Undo All Changes — discards marker/splice/signal-name changes since the last "
              "load or save and re-reads the file fresh (asks to confirm first)")
     btn_undo_all.clicked.connect(lambda: _on_undo_all_clicked(ctx))
     content_layout.addWidget(btn_undo_all)

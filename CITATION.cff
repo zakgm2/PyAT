@@ -5,8 +5,8 @@ cff-version: 1.2.0
 message: "If you use PyAT in your research, please cite it using the metadata below."
 title: "PyAT: Python Analysis Tool"
 type: software
-version: "3.2.0"
-date-released: "2026-10-01"
+version: "4.0.0"
+date-released: "2026-10-10"
 repository-code: "https://github.com/zakgm2/PyAT"
 url: "https://github.com/zakgm2/PyAT"
 abstract: >-
@@ -14,7 +14,7 @@ abstract: >-
   lab recordings: fibre photometry (TDT), NIRS (Oxysoft), generic tabular data and EFNMR. It
   provides motion and photobleaching correction, dF/F, event-locked z-score PETH, FFT, AUC,
   peak finding and curve fitting, with splice and marker editing. Its computation lives in the
-  companion package PhysicsLibrary (ZaksPhysicsLibrary on PyPI).
+  companion package PyATCLI (on PyPI as PyATCLI).
 keywords:
   - fibre photometry
   - neuroscience

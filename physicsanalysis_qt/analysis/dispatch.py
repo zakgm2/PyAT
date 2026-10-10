@@ -13,26 +13,22 @@ import datetime
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QPushButton
 
+from ..app import errorlog
 from ..context import export_file
-from ..toasts import show_error, show_window_toast
+from ..export.figure_export import export_figure
+from ..app.toasts import show_error, show_window_toast
 from .analysis_picker import disarm_analysis
 from .window_settings import get_window  # noqa: F401 — re-exported: existing callers import get_window from here
 
 
-def export_figure_to_file(ctx, fig_obj, default_prefix, tracking_info=""):
-    ts = datetime.datetime.now().strftime("%H%M%S")
-    store_name = ctx.cache.get('store', 'Data') if ctx.cache else 'Data'
-    suffix = f"_{tracking_info}" if tracking_info else ""
-    export_file(
-        ctx, ctx.win, f"Export {default_prefix} Visualization",
-        f"{default_prefix}_{store_name}{suffix}_{ts}.png",
-        "PNG Image (*.png);;PDF Document (*.pdf);;SVG Vector (*.svg)",
-        lambda path: fig_obj.savefig(path, dpi=300, bbox_inches='tight'),
-    )
+def export_figure_to_file(ctx, fig_obj, default_prefix, tracking_info="", provenance=None):
+    """An analysis window's Export Plot: the Export Figure dialog (format, resolution, editable titles and
+    labels, a data CSV beside the figure — see export/figure_export.py), then the figure."""
+    export_figure(ctx, fig_obj, default_prefix, tracking_info, provenance=provenance)
 
 
 def add_stats_export_buttons(ctx, parent, btn_row_layout, *, get_clipboard_text,
-                              csv_default_name, csv_header, get_csv_rows):
+                              csv_default_name, csv_header, get_csv_rows, provenance=None):
     """Wires a "Copy" + "Export CSV" QPushButton pair into btn_row_layout,
     matching curve_fit.py's original _copy_params/_export_csv pattern —
     shared here so every stats-bearing analysis dialog (AUC, FFT, PETH,
@@ -54,6 +50,9 @@ def add_stats_export_buttons(ctx, parent, btn_row_layout, *, get_clipboard_text,
     get_csv_rows : () -> list[list] or None/[], called when Export CSV is
         clicked; an empty/None result shows a "run it first" error instead
         of opening the save dialog.
+    provenance : {"kind", "parameters"} describing the analysis, or a () -> that
+        (resolved at click time, for a dialog whose settings can change); written
+        beside the CSV as its provenance record — see context.export_file.
 
     Returns (btn_copy, btn_csv) in case a caller wants to reposition/
     restyle them beyond just having been appended to btn_row_layout.
@@ -82,6 +81,7 @@ def add_stats_export_buttons(ctx, parent, btn_row_layout, *, get_clipboard_text,
         export_file(
             ctx, parent, f"Export {name}", f"{name}_{ts}.csv",
             "CSV (*.csv);;Text (*.txt)", lambda path: _write_csv(path, rows),
+            provenance=provenance() if callable(provenance) else provenance,
         )
 
     btn_copy = QPushButton("Copy")
@@ -122,6 +122,8 @@ def analysis_type(ctx, clicked_x):
     # would immediately start a fresh drag with no release event left to end
     # it (the real release already got consumed inside the dialog's nested
     # event loop). Defer reactivation to the next Qt tick instead.
+    pre, post = get_window(ctx)
+    errorlog.action("analysis", tool=current_mode, center_s=center_timestamp, pre_s=pre, post_s=post)
     ctx.rect_selector.set_active(False)
     try:
         if current_mode is not None:
