@@ -70,4 +70,4 @@ Entry point: run_qt.py (run_qt.pyw, the windowed launcher the packaged app is bu
 # pyproject.toml on disk to read (see app/update_check.py's local_version()).
 # Bump this together with pyproject.toml's version field on every release
 # — see Deployment Steps.md.
-__version__ = "4.0.0"
+__version__ = "4.0.1"

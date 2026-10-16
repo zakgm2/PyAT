@@ -2,6 +2,16 @@
 
 ---
 
+## v4.0.1
+**A fix for the downloaded app: PDF and SVG export work again.** Nothing else changed; it still needs **PyATCLI 2026.10.10** or newer, which the downloads already contain.
+
+**Upgrading:** replace the exe (the v4.0.0 download is the one that is broken); settings and saved files are untouched. From source there is nothing to do.
+
+**Fixed**
+- **Export Figure, Export View and the group analysis's PDFs failed in the downloaded app** with *"Export failed: No module named 'matplotlib.backends.backend_pdf'"* (SVG the same way); PNG and TIFF were fine. matplotlib loads the PDF and SVG writers by name only when a file is written, so the packager never saw them and left them out of v4.0.0's `PyAT.exe` and `PyAT.app`. They are now bundled, and `tests/test_packaging.py` fails if a vector format is added without its writer being named in `PhysicsAnalysis.spec`. Running from source was never affected.
+
+---
+
 ## v4.0.0
 **A major release: the analysis engine, the PyATCLI rename, and Open Results…**
 Needs **PyATCLI 2026.10.10** or newer (`pip install PyATCLI`) — the analysis library under its new name; it was PhysicsLibrary, on PyPI `ZaksPhysicsLibrary`. The downloads already contain it.

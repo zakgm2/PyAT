@@ -75,7 +75,12 @@ a = Analysis(
     datas=[
         ('physicsanalysis_qt/assets', 'physicsanalysis_qt/assets'),
     ] + _metadata,
-    hiddenimports=[],
+    # savefig() imports its backend by name at run time (importlib), which PyInstaller's static scan cannot see, and the
+    # app itself only imports backend_qtagg: without these two, Export Figure, the group analysis's PDFs and Export
+    # View fail in the shipped exe with "No module named 'matplotlib.backends.backend_pdf'" (PNG and TIFF go through
+    # backend_agg, which backend_qtagg already pulls in). tests/test_packaging.py keeps this list in step with the
+    # formats figures/render.py writes.
+    hiddenimports=['matplotlib.backends.backend_pdf', 'matplotlib.backends.backend_svg'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
