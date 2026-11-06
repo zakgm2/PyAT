@@ -7,19 +7,17 @@ engines in Options is instant), mouse/scroll/resize event wiring,
 rectangle selector, status bar.
 """
 
-from datetime import date
-
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.widgets import RectangleSelector
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import QMimeData, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenu, QSizePolicy, QStatusBar, QStackedWidget,
     QToolButton,
 )
 
-from ..app import errorlog
+from ..app import citation, errorlog
 from ..plot import interaction
 from ..edit import undo
 from ..app.background import cancel_running
@@ -30,8 +28,7 @@ from ..app.window_fit import fit_to_screen
 from .toolbar import build_toolbar
 from .edit_toolbar import build_edit_toolbar
 
-REPO_URL = "https://github.com/zakgm2/PyAT"
-FEEDBACK_URL = f"{REPO_URL}/issues"
+FEEDBACK_URL = f"{citation.REPO_URL}/issues"
 COFFEE_URL = "https://buymeacoffee.com/zakgm2"
 
 
@@ -183,6 +180,13 @@ def _build_coffee_button():
     return btn
 
 
+def _leave_room_for_arrow(btn):
+    """The Fusion style draws a menu button's drop-down arrow at the label's right edge, touching the last letter
+    (or the icon); a little padding on that side keeps the two apart. A style sheet that sets only the padding
+    leaves the style's own look (hover frame, pressed state) alone."""
+    btn.setStyleSheet("QToolButton { padding-right: 10px; }")
+
+
 def _build_feedback_button(ctx):
     """Bug icon in the status bar's bottom-right corner: a menu to save a problem report (what to send the
     developer when something goes wrong — see app/errorlog.py), open the error-log folder, or open the GitHub
@@ -199,36 +203,41 @@ def _build_feedback_button(ctx):
     menu.addAction("Send feedback on GitHub", lambda: QDesktopServices.openUrl(QUrl(FEEDBACK_URL)))
     btn.setMenu(menu)
     btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    _leave_room_for_arrow(btn)
     return btn
 
 
-def apa_citation():
-    """APA 7 software citation. Year is "today" rather than a stored
-    per-version release date — this project doesn't track one, and for a
-    citation generated at run time that's a reasonable stand-in."""
-    try:
-        version = local_version("physicsanalysis_qt")
-    except Exception:
-        version = None
-    version_part = f" (Version {version})" if version else ""
-    return f"Grand Maison, Z. ({date.today().year}). PyAT: Python Analysis Tool{version_part} [Computer software]. {REPO_URL}"
+def _copy_citation(ctx, label, build, styled):
+    """Puts this app's citation on the clipboard in one format, as plain text and, for the text styles, as
+    rich text too (the title in italics, which a word processor keeps on paste), and says so in a toast."""
+    text = build(citation.current())
+    data = QMimeData()
+    data.setText(citation.plain(text))
+    if styled:
+        data.setHtml(citation.html(text))
+    ctx.app.clipboard().setMimeData(data)
+    show_window_toast(ctx, f"{label} citation copied to clipboard")
 
 
 def _build_citation_button(ctx):
-    """Quote-mark icon in the status bar — copies an APA citation for this
-    app to the clipboard and confirms with a toast, so users citing it in
-    a paper don't have to hand-write the format themselves."""
+    """Quote-mark button in the status bar: a menu of the formats a paper or a reference manager asks for
+    (app/citation.py). Choosing one copies the app's citation, with the installed version, so users citing it
+    in a paper don't have to hand-write the format themselves."""
     btn = QToolButton()
-    btn.setText("❝ APA Citation")
-    btn.setToolTip("Copy APA citation to clipboard")
+    btn.setText("❝ Citation")
+    btn.setToolTip("Copy a citation for this app (choose the format)")
     btn.setAutoRaise(True)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def _copy():
-        ctx.app.clipboard().setText(apa_citation())
-        show_window_toast(ctx, "Citation copied to clipboard")
-
-    btn.clicked.connect(_copy)
+    menu = QMenu(btn)
+    split = False
+    for label, build, styled in citation.FORMATS:
+        if not styled and not split:
+            menu.addSeparator()
+            split = True
+        menu.addAction(label, lambda checked=False, l=label, b=build, s=styled: _copy_citation(ctx, l, b, s))
+    btn.setMenu(menu)
+    btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+    _leave_room_for_arrow(btn)
     return btn
 
 

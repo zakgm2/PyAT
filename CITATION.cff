@@ -5,8 +5,8 @@ cff-version: 1.2.0
 message: "If you use PyAT in your research, please cite it using the metadata below."
 title: "PyAT: Python Analysis Tool"
 type: software
-version: "4.0.1"
-date-released: "2026-10-15"
+version: "4.1.0"
+date-released: "2026-11-02"
 repository-code: "https://github.com/zakgm2/PyAT"
 url: "https://github.com/zakgm2/PyAT"
 abstract: >-
@@ -23,7 +23,7 @@ keywords:
   - PETH
 authors:
   - family-names: "Grand Maison"
-    given-names: "Z."   # as in the app's APA citation; spell out if you prefer
-    # affiliation: "Your university / lab"
-    # orcid: "https://orcid.org/0000-0000-0000-0000"
+    given-names: "Zakary"
+    orcid: "https://orcid.org/0009-0001-3946-0616"
+    affiliation: "Concordia University"
 license: AGPL-3.0-only

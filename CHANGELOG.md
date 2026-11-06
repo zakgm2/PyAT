@@ -2,6 +2,25 @@
 
 ---
 
+## v4.1.0
+**The Peak Finder no longer mistakes the start of a recording, or chance, for a result.** Needs **PyATCLI 2026.11.2** or newer, which the downloads already contain. Nothing else changed.
+
+**Upgrading:** replace the exe; settings and saved files are untouched. From source: `pip install --upgrade PyATCLI`.
+
+**New**
+- **Ignore the first (s)** in the Peak Finder's *Whole recording* scope, 10 s by default. A trace is least settled right after the light comes on, and the tail of the bleaching there reads as unusual: on synthetic recordings with no transients at all, the false five-sigma peaks sat in the first seconds, and a 10 s buffer removed them. Only the search skips the start: the z-scores still use the whole recording, so no other peak changes. Set it to 0 for the old behaviour. It does not remove false peaks that motion artefacts cause later, and 10 s was chosen on synthetic data, so look at the first minute of your own recording and set what it needs.
+- **Compare with shuffled event times (chance level)** in the three event scopes, on by default (1000 shuffles, about two seconds per 20 events). Finding a peak near an event is partly chance, because the search takes the largest z in each window. The whole train of events is moved by a random shift and every shifted event is searched the same way. The results window says how often that finds a peak and how likely it is that as many of your events had one; the table gets a *p (shuffle)* column per event; *Scan every event type* gets *Chance Hit Rate*, *p (shuffle)* and *p (Holm)* (corrected for the number of event types scanned). If your recording really has responses, some shifted windows land on them and count as chance, so the p-values err on the side of caution. Untick the box for the old table.
+
+- **❝ Citation** in the status bar is now a menu of formats: APA 7, MLA 9, Chicago (author-date), Harvard, Vancouver, IEEE, BibTeX and RIS (for EndNote, Zotero, Mendeley). APA, MLA, Chicago and Harvard paste with the title in italics. All of them are made from one set of facts, which a test compares with `CITATION.cff`, so the formats cannot disagree with each other or with GitHub's "Cite this repository" box. The app has a place for the Zenodo DOI (`CONCEPT_DOI` in `app/citation.py`); until it is filled in the citation points at the GitHub repository.
+
+**Changed**
+- The citation's year is the year of the installed version's release (it was the year on your clock, so 4.1.0 would have been cited as 2027 next year), and it names GitHub as the host, as APA asks.
+- Peak Finder exports near events have the extra column(s) unless the box is unticked. The CSV and the provenance record carry the shuffle count and seed (0), so `python -m PyATCLI reproduce` repeats them exactly. Records written before this version replay as they were run (no start buffer, no shuffles).
+
+**Tests:** 685 (4 new for the Peak Finder: which settings show for which scope, the buffer hides the start, the chance level in the window and the export, and the table without it; 19 new for the citation formats, the button, and the facts agreeing with `CITATION.cff`); every Peak Finder export is still compared column for column with a fresh library run.
+
+---
+
 ## v4.0.1
 **A fix for the downloaded app: PDF and SVG export work again.** Nothing else changed; it still needs **PyATCLI 2026.10.10** or newer, which the downloads already contain.
 

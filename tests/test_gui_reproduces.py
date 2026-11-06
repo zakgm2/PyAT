@@ -19,7 +19,7 @@ import numpy as np
 
 import tdt
 from matplotlib.figure import Figure
-from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QPushButton
+from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton
 
 import PyATCLI as pl
 from PyATCLI import provenance as pv
@@ -387,6 +387,12 @@ class TestPeakFinderAndIntervals(GuiCase):
                 for k, v in fields.items():
                     if k == "event":
                         dlg.combo_event_name.setCurrentIndex(dlg.combo_event_name.findData(v))
+                if "buffer" in fields:
+                    dlg.spin_buffer.setValue(fields["buffer"])
+                if "shuffles" in fields:
+                    dlg.cb_null.setChecked(fields["shuffles"] > 0)
+                    if fields["shuffles"] > 0:
+                        dlg.spin_shuffles.setValue(fields["shuffles"])
                 dlg._accept()
                 return QDialog.DialogCode.Accepted
             return 0
@@ -409,7 +415,54 @@ class TestPeakFinderAndIntervals(GuiCase):
         prov = self.rec.csv[0]["provenance"]
         self.assertEqual(prov["parameters"]["scope"], "scan_all")
         self.assertIn("L1P¹", prov["parameters"]["event_groups"])
+        self.assertEqual(header[5:], ["Chance Hit Rate", "p (shuffle)", "p (Holm)"])           # the chance level is on unless it is unchecked
         self.assert_same_export(header, rows, self.lib_table(prov, "scan"), "peaks_scan")
+
+    def test_the_dialog_offers_the_start_buffer_for_the_whole_recording_and_the_chance_level_for_events(self):
+        self.modules(peak_finder)
+        dlg = peak_finder._PeakFinderDialog(self.ctx.win, self.ctx)
+        dlg.combo_scope.setCurrentText(peak_finder.SCOPE_WHOLE)
+        self.assertTrue(dlg.buffer_widget.isVisibleTo(dlg))
+        self.assertFalse(dlg.null_widget.isVisibleTo(dlg))
+        self.assertEqual(dlg.spin_buffer.value(), 10.0)
+        for scope in (peak_finder.SCOPE_ALL_SAME_NAME, peak_finder.SCOPE_ONE_EVENT, peak_finder.SCOPE_SCAN_ALL_TYPES):
+            dlg.combo_scope.setCurrentText(scope)
+            self.assertFalse(dlg.buffer_widget.isVisibleTo(dlg), scope)
+            self.assertTrue(dlg.null_widget.isVisibleTo(dlg), scope)
+        self.assertTrue(dlg.cb_null.isChecked())
+        self.assertEqual(dlg.spin_shuffles.value(), 1000)
+        dlg.cb_null.setChecked(False)
+        self.assertFalse(dlg.spin_shuffles.isEnabled())
+
+    def peak_marker_times(self):
+        return [m["time"] for m in self.ctx.cache["markers"] if m.get("label") == "AutoPeak"]
+
+    def test_the_whole_recording_search_leaves_out_the_start_buffer(self):
+        self.run_finder(peak_finder.SCOPE_WHOLE, z=1.0, buffer=0.0)
+        every = self.peak_marker_times()
+        self.ctx.cache["markers"] = [m for m in self.ctx.cache["markers"] if m.get("label") != "AutoPeak"]
+        self.run_finder(peak_finder.SCOPE_WHOLE, z=1.0)                                       # the dialog's own default
+        buffered = self.peak_marker_times()
+        self.assertTrue(any(t < 10.0 for t in every))                                         # the first press (5 s) is a peak ...
+        self.assertTrue(buffered and all(t >= 10.0 for t in buffered))                       # ... which the default buffer hides
+
+    def test_events_come_with_their_chance_level_in_the_window_and_the_export(self):
+        self.run_finder(peak_finder.SCOPE_ALL_SAME_NAME, event="L1P¹", z=1.5, shuffles=300)
+        header, rows = self.rec.csv_table(0)
+        prov = self.rec.csv[0]["provenance"]
+        self.assertEqual(header[-1], "p (shuffle)")
+        self.assertEqual((prov["parameters"]["n_shuffles"], prov["parameters"]["seed"]), (300, 0))
+        self.assert_same_export(header, rows, self.lib_table(prov, "alignment"), "peaks_with_null")
+        window = next(d for d in self.exec_calls if isinstance(d, peak_finder._AlignmentResultsDialog))
+        self.assertIn("by chance", " ".join(label.text() for label in window.findChildren(QLabel)))
+
+    def test_without_the_chance_level_the_export_is_the_table_it_was(self):
+        self.run_finder(peak_finder.SCOPE_ALL_SAME_NAME, event="L1P¹", z=1.5, shuffles=0)
+        header, rows = self.rec.csv_table(0)
+        prov = self.rec.csv[0]["provenance"]
+        self.assertEqual(header, ["Event Time (s)", "Found", "Latency (s)", "Z-score"])
+        self.assertEqual(prov["parameters"]["n_shuffles"], 0)
+        self.assert_same_export(header, rows, self.lib_table(prov, "alignment"), "peaks_without_null")
 
     def test_event_intervals(self):
         self.ctx.cache["markers"] = list(self.ctx.cache["detected_markers"][:8])

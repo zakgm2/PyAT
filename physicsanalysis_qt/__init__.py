@@ -21,6 +21,7 @@ here is what has to be on screen or in a user's hands. Split by concern:
       errorlog.py       the rotating session log, the crash dialog and the saved problem report
       options.py        the Options dialog and settings
       update_check.py   the GitHub update check
+      citation.py       the status bar's citation button: the app's citation in APA, MLA, Chicago, Harvard, Vancouver, IEEE, BibTeX, RIS
       theme.py          light / dark theme
       window_fit.py     keeps windows/dialogs within the screen on small displays
   backend/            - the way to the engine: engine_client.py (the process, requests, progress, cancel, restart),
@@ -70,4 +71,8 @@ Entry point: run_qt.py (run_qt.pyw, the windowed launcher the packaged app is bu
 # pyproject.toml on disk to read (see app/update_check.py's local_version()).
 # Bump this together with pyproject.toml's version field on every release
 # — see Deployment Steps.md.
-__version__ = "4.0.1"
+__version__ = "4.1.0"
+
+# The day this version was released; its year is the year in the citation the status bar's citation button copies.
+# Bump it with __version__ (tests/test_citation.py checks both against CITATION.cff).
+__release_date__ = "2026-11-02"

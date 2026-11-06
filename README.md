@@ -20,6 +20,7 @@ The main plot can render with **matplotlib** (CPU) or **PyQtGraph** (fast CPU-si
 - **Hover snap** — tracker dots snap to the nearest plotted line and display exact values
 - **Curve fitting** — click two points to fit a model (linear, exponential, Gaussian, sinusoidal, …) to that segment; copy or export parameters as CSV
 - **FFT viewer** — frequency analysis window with automatic peak annotation
+- **Peak Finder** — significant peaks across the whole recording (the first 10 s are ignored by default: the trace is least settled right after the light comes on) or near your event markers, with a shuffled-events chance level and p-values so a "found" peak can be told from chance
 - **PETH / Z-score** — peri-event time histogram for TDT data, plus a GuPPy-style Event PETH (stacked heatmap + trial-averaged trace) with a per-trial include/exclude checklist for dropping an obviously contaminated trial without changing the event or window
 - **Plot signal selector** — for TDT recordings, a toolbar "Plot:" dropdown (Normalized (dF/F), Isosbestic, Main Driver — built from whatever the recording actually has, no Isosbestic entry if there's no 415 reference stream) picks what the main plot shows; tick more than one in the dropdown to overlay them, the button's own label summarizes the current pick(s). Analysis tools (AUC, FFT, Curve Fit, Z-Score PETH) still work on a single signal — whichever was ticked most recently — regardless of how many are shown on the plot
 - **PT2 image viewer** — colormap selector, live title editing, PNG/PDF/SVG export
@@ -65,7 +66,7 @@ cd PyAT
 pip install -r requirements.txt
 ```
 
-That installs the analysis library from PyPI too (`PyATCLI`, 2026.10.10 or newer). To work on both repositories side by side, clone [PyATCLI](https://github.com/zakgm2/PyATCLI) next to this one and run `pip install -e ../PyATCLI`.
+That installs the analysis library from PyPI too (`PyATCLI`, 2026.11.2 or newer). To work on both repositories side by side, clone [PyATCLI](https://github.com/zakgm2/PyATCLI) next to this one and run `pip install -e ../PyATCLI`.
 
 **Prebuilt executables** (no Python install needed) are attached to each
 [GitHub Release](https://github.com/zakgm2/PyAT/releases) for
@@ -136,12 +137,19 @@ PyAT writes its CSVs with a fixed number of decimals, so for its records `reprod
 
 ---
 
+## How to cite
+
+The **❝ Citation** button in the status bar's bottom-right corner copies a citation for the installed version in the format you choose: APA 7, MLA 9, Chicago (author-date), Harvard, Vancouver, IEEE, BibTeX, or RIS (which EndNote, Zotero and Mendeley import). APA, MLA, Chicago and Harvard paste with the title in italics. GitHub's **Cite this repository** box (from `CITATION.cff`) gives APA and BibTeX, and Zenodo's page for a release (once the first one is archived) offers more export formats. Cite the version you ran, and PyATCLI too if you used it directly.
+
+---
+
 ## Version History
 
 See [CHANGELOG.md](CHANGELOG.md) for the full changelog.
 
 | Version | Summary |
 |---------|---------|
+| 4.1.0 | **Peak Finder**: *Whole recording* ignores the first 10 s by default (a trace is least settled right after the light comes on; adjustable, 0 for the old behaviour), and the three event scopes compare with shuffled event times by default (a chance level, and a p-value per event and per event type, in the window, the CSV and the provenance record). **Citation button**: pick the format (APA, MLA, Chicago, Harvard, Vancouver, IEEE, BibTeX, RIS); the year is the version's release year, not today's. Requires PyATCLI 2026.11.2 |
 | 4.0.1 | Fix: **PDF and SVG export failed in the downloaded app** ("Export failed: No module named 'matplotlib.backends.backend_pdf'") — Export Figure, Export View and the Group Analysis's PDFs; PNG and TIFF were fine and running from source was never affected. v4.0.0's `PyAT.exe` / `PyAT.app` had been built without matplotlib's PDF and SVG writers (matplotlib loads them by name only when a file is written, so the packager missed them); they are bundled now, and a test fails if a vector format is added without its writer. Nothing else changed |
 | 4.0.0 | Major release. The slow work — loading a recording, splicing, every analysis, group analysis, Save Changes — runs in a second process, the **analysis engine**, so the window never freezes, **Esc** cancels and a crash in a library cannot take the app down (`PyAT.exe` starts itself as the engine; two `PyAT.exe` in Task Manager is normal). The analysis library is now **PyATCLI** (`pip install PyATCLI`; PhysicsLibrary / `ZaksPhysicsLibrary` before) and requires `PyATCLI>=2026.10.10`; it draws nothing, the app draws everything. New: **Open Results…** (reopen a group analysis, a record or an exported CSV from its files), a **provenance record** beside every export that `python -m PyATCLI reproduce` replays, an **Export Figure** dialog (PNG/TIFF/PDF/SVG up to 1200 dpi, editable text, the data CSV beside each figure) and a white-page **Export View**, **Rename signals**, rename the title/labels by double-click on both engines and a **legend entry** on PyQtGraph, a rotating **crash and error log** with Save report, the folders reorganised. Fixed: Ctrl+Z on text boxes and highlights, the Z-Score window cutting off its peak, Event PETH's trial axis. Removed: the VisPy plot engine. Settings and saved files are read as before |
 | 3.2.0 | New **Highlighter** (5 standard colors, click-click to shade a range) and **Text** tools (click to drop a free text box, right-click-hold to drag, plain right-click to delete) on the left sidebar, both saved as sidecars like markers; markers can be placed with no name, and a marker's label can be dragged to a different height; **Ctrl+Z** undoes the last marker/splice edit; Event PETH and every Group Analysis figure now have an editable Title field; the Group Analysis measures figure can show a single measure full-size, fixed its title overlapping at small sizes, and its heatmap color scale is now symmetric around the data's own peak; the "Plot:" signal picker is now a checkable dropdown instead of a row that didn't scale to a narrow window; the Tools sidebar's collapse arrow lines up with its other icons and drops the redundant "Tools" title while expanded |
