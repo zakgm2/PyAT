@@ -17,7 +17,7 @@
 - The citation's year is the year of the installed version's release (it was the year on your clock, so 4.1.0 would have been cited as 2027 next year), and it names GitHub as the host, as APA asks.
 - Peak Finder exports near events have the extra column(s) unless the box is unticked. The CSV and the provenance record carry the shuffle count and seed (0), so `python -m PyATCLI reproduce` repeats them exactly. Records written before this version replay as they were run (no start buffer, no shuffles).
 
-**Tests:** 685 (4 new for the Peak Finder: which settings show for which scope, the buffer hides the start, the chance level in the window and the export, and the table without it; 19 new for the citation formats, the button, and the facts agreeing with `CITATION.cff`); every Peak Finder export is still compared column for column with a fresh library run.
+**Tests:** 686 (4 new for the Peak Finder: which settings show for which scope, the buffer hides the start, the chance level in the window and the export, and the table without it; 20 new for the citation formats, the button and its arrow gap, and the facts agreeing with `CITATION.cff`); every Peak Finder export is still compared column for column with a fresh library run.
 
 ---
 
