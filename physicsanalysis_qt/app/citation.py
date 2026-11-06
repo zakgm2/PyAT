@@ -25,10 +25,10 @@ TITLE = "PyAT: Python Analysis Tool"
 REPO_URL = "https://github.com/zakgm2/PyAT"
 
 # The Zenodo *concept* DOI ("Cite all versions"): one number for every version of the app, so it is right in an
-# install of any age. Zenodo only makes it when it archives the first GitHub Release, so a release cannot contain
-# its own: fill it in for the next one (and add `doi:` to CITATION.cff; a test fails if the two differ).
-# Empty: the citation points at the GitHub repository instead.
-CONCEPT_DOI = ""
+# install of any age (a version's own DOI is made when Zenodo archives it, so a release cannot contain it).
+# Keep it equal to `doi:` in CITATION.cff; a test fails if they differ. Empty: the citation points at the GitHub
+# repository instead, as 4.1.0's did (it was released before Zenodo had made the number).
+CONCEPT_DOI = "10.5281/zenodo.23994251"
 
 
 @dataclass(frozen=True)

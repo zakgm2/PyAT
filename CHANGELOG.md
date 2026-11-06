@@ -2,6 +2,21 @@
 
 ---
 
+## v4.1.1
+**The citation now carries the project's permanent DOI, and a pandas 3.1 deprecation warning is gone.** Still needs **PyATCLI 2026.11.2** or newer; nothing else changed.
+
+**Upgrading:** replace the exe; settings and saved files are untouched. From source there is nothing to do.
+
+**New**
+- **❝ Citation carries the Zenodo DOI** ([10.5281/zenodo.23994251](https://doi.org/10.5281/zenodo.23994251); one number for all versions, always opening the latest release's page) in every format, next to the version you have installed. `CITATION.cff` (so GitHub's "Cite this repository" box) and the README (a badge, and *How to cite*) have it too. 4.1.0 cites the GitHub repository instead, because Zenodo makes a release's DOI when it archives it, so a release cannot hold its own.
+
+**Fixed**
+- pandas 3.1 deprecated the `float_precision` argument of `read_csv` (it warns whenever it is given), and the app passed it when reading the tables the engine writes as files for Group Analysis and Open Results. It is now passed only on pandas older than 3.1, where it is still what returns the numbers exactly as written (the default converter there gave a different float64 for about a quarter of the random values in a test); pandas 3.1's single converter is exact, so nothing is passed there.
+
+**Tests:** 688 (2 new: 40,000 numbers read back bit for bit, with no warning; every citation format points at the DOI).
+
+---
+
 ## v4.1.0
 **The Peak Finder no longer mistakes the start of a recording, or chance, for a result.** Needs **PyATCLI 2026.11.2** or newer, which the downloads already contain. Nothing else changed.
 

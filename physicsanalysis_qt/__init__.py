@@ -71,8 +71,8 @@ Entry point: run_qt.py (run_qt.pyw, the windowed launcher the packaged app is bu
 # pyproject.toml on disk to read (see app/update_check.py's local_version()).
 # Bump this together with pyproject.toml's version field on every release
 # — see Deployment Steps.md.
-__version__ = "4.1.0"
+__version__ = "4.1.1"
 
 # The day this version was released; its year is the year in the citation the status bar's citation button copies.
 # Bump it with __version__ (tests/test_citation.py checks both against CITATION.cff).
-__release_date__ = "2026-11-02"
+__release_date__ = "2026-11-05"

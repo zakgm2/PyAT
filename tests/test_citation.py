@@ -152,6 +152,13 @@ class TestTheFactsAgreeWithCitationCff(unittest.TestCase):
         if citation.CONCEPT_DOI:
             self.assertRegex(citation.CONCEPT_DOI, r"^10\.\d{4,9}/\S+$")
 
+    def test_the_citation_the_button_copies_points_at_the_doi(self):
+        self.assertTrue(citation.CONCEPT_DOI, "a release cites the Zenodo concept DOI: set CONCEPT_DOI and `doi:` in CITATION.cff")
+        software = citation.current()
+        self.assertEqual(software.doi, citation.CONCEPT_DOI)
+        for label, build, _styled in citation.FORMATS:
+            self.assertIn(f"https://doi.org/{citation.CONCEPT_DOI}", build(software), label)
+
 
 class TestTheButton(unittest.TestCase):
     @classmethod

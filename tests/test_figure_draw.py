@@ -14,6 +14,7 @@ from numpy.testing import assert_array_equal
 
 import PyATCLI as pl
 from PyATCLI.analysis import compute_peri_event_from_trace
+from physicsanalysis_qt.backend.tables import EXACT_FLOATS
 from physicsanalysis_qt.figures import draw
 
 from tests.figure_fixtures import make_cache
@@ -315,7 +316,7 @@ class TestTablesAreTheSameAsTheirCsvs(DrawCase):
         for name, table in result.tables.items():
             path = os.path.join(self.tmp, f"{name}.csv")
             table.to_csv(path, index=False)
-            out[name] = pd.read_csv(path, encoding="utf-8-sig", float_precision="round_trip")
+            out[name] = pd.read_csv(path, encoding="utf-8-sig", **EXACT_FLOATS)
         return out
 
     def test_every_analysis_window(self):

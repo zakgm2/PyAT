@@ -1,12 +1,14 @@
 # Citation metadata: GitHub shows a "Cite this repository" box from this file, and
 # Zenodo reads it when it archives a release. Update `version` and `date-released`
-# at every release (and add the Zenodo `doi:` once the first archive exists).
+# at every release. `doi` is the Zenodo concept DOI ("Cite all versions"), the same for every version;
+# keep it equal to CONCEPT_DOI in physicsanalysis_qt/app/citation.py (a test checks).
 cff-version: 1.2.0
 message: "If you use PyAT in your research, please cite it using the metadata below."
 title: "PyAT: Python Analysis Tool"
 type: software
-version: "4.1.0"
-date-released: "2026-11-02"
+version: "4.1.1"
+date-released: "2026-11-05"
+doi: "10.5281/zenodo.23994251"
 repository-code: "https://github.com/zakgm2/PyAT"
 url: "https://github.com/zakgm2/PyAT"
 abstract: >-

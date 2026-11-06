@@ -1,5 +1,7 @@
 # PyAT — Python Analysis Tool
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23994251.svg)](https://doi.org/10.5281/zenodo.23994251)
+
 A general-purpose PyQt6 desktop application for loading, plotting, and analysing time-series and tabular lab data — CSV/Excel, curve fitting, FFT, peri-event analysis — with a current focus on fibre photometry.
 
 Supports TDT fibre photometry recordings, Oxysoft / Artinis NIRS exports, generic tabular data (Excel, CSV, TSV, plain text), Terranova Prospa EFNMR/MRI `.pt2` images, and grouped-text-field studies (one JSON file per subject, e.g. a survey with several free-text responses).
@@ -139,7 +141,7 @@ PyAT writes its CSVs with a fixed number of decimals, so for its records `reprod
 
 ## How to cite
 
-The **❝ Citation** button in the status bar's bottom-right corner copies a citation for the installed version in the format you choose: APA 7, MLA 9, Chicago (author-date), Harvard, Vancouver, IEEE, BibTeX, or RIS (which EndNote, Zotero and Mendeley import). APA, MLA, Chicago and Harvard paste with the title in italics. GitHub's **Cite this repository** box (from `CITATION.cff`) gives APA and BibTeX, and Zenodo's page for a release (once the first one is archived) offers more export formats. Cite the version you ran, and PyATCLI too if you used it directly.
+The **❝ Citation** button in the status bar's bottom-right corner copies a citation for the installed version in the format you choose: APA 7, MLA 9, Chicago (author-date), Harvard, Vancouver, IEEE, BibTeX, or RIS (which EndNote, Zotero and Mendeley import). APA, MLA, Chicago and Harvard paste with the title in italics. GitHub's **Cite this repository** box (from `CITATION.cff`) gives APA and BibTeX, and Zenodo's page for the project offers more export formats. The citation carries the project's Zenodo DOI, [10.5281/zenodo.23994251](https://doi.org/10.5281/zenodo.23994251), which is the same for every version and always opens the latest release's page, together with the version you have installed. If you used PyATCLI directly, cite it too: [10.5281/zenodo.23994241](https://doi.org/10.5281/zenodo.23994241).
 
 ---
 
@@ -149,6 +151,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full changelog.
 
 | Version | Summary |
 |---------|---------|
+| 4.1.1 | **Citation DOI**: the ❝ Citation button, `CITATION.cff` and the README carry the project's permanent Zenodo DOI. **pandas 3.1**: no deprecation warning when the app reads the engine's tables (the numbers still read back exactly). Requires PyATCLI 2026.11.2 |
 | 4.1.0 | **Peak Finder**: *Whole recording* ignores the first 10 s by default (a trace is least settled right after the light comes on; adjustable, 0 for the old behaviour), and the three event scopes compare with shuffled event times by default (a chance level, and a p-value per event and per event type, in the window, the CSV and the provenance record). **Citation button**: pick the format (APA, MLA, Chicago, Harvard, Vancouver, IEEE, BibTeX, RIS); the year is the version's release year, not today's. Requires PyATCLI 2026.11.2 |
 | 4.0.1 | Fix: **PDF and SVG export failed in the downloaded app** ("Export failed: No module named 'matplotlib.backends.backend_pdf'") — Export Figure, Export View and the Group Analysis's PDFs; PNG and TIFF were fine and running from source was never affected. v4.0.0's `PyAT.exe` / `PyAT.app` had been built without matplotlib's PDF and SVG writers (matplotlib loads them by name only when a file is written, so the packager missed them); they are bundled now, and a test fails if a vector format is added without its writer. Nothing else changed |
 | 4.0.0 | Major release. The slow work — loading a recording, splicing, every analysis, group analysis, Save Changes — runs in a second process, the **analysis engine**, so the window never freezes, **Esc** cancels and a crash in a library cannot take the app down (`PyAT.exe` starts itself as the engine; two `PyAT.exe` in Task Manager is normal). The analysis library is now **PyATCLI** (`pip install PyATCLI`; PhysicsLibrary / `ZaksPhysicsLibrary` before) and requires `PyATCLI>=2026.10.10`; it draws nothing, the app draws everything. New: **Open Results…** (reopen a group analysis, a record or an exported CSV from its files), a **provenance record** beside every export that `python -m PyATCLI reproduce` replays, an **Export Figure** dialog (PNG/TIFF/PDF/SVG up to 1200 dpi, editable text, the data CSV beside each figure) and a white-page **Export View**, **Rename signals**, rename the title/labels by double-click on both engines and a **legend entry** on PyQtGraph, a rotating **crash and error log** with Save report, the folders reorganised. Fixed: Ctrl+Z on text boxes and highlights, the Z-Score window cutting off its peak, Event PETH's trial axis. Removed: the VisPy plot engine. Settings and saved files are read as before |
