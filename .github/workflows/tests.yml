@@ -25,6 +25,7 @@ jobs:
     runs-on: windows-latest
     env:
       QT_QPA_PLATFORM: offscreen   # no display on the runner: Qt draws into memory
+      PYTHONUNBUFFERED: "1"        # a process that dies takes no buffered output with it
     steps:
       - uses: actions/checkout@v7
 
@@ -58,5 +59,8 @@ jobs:
           python -c "import PyATCLI; print('PyATCLI', PyATCLI.__version__)"
 
       # Run from the repo root so `import physicsanalysis_qt` picks up this checkout.
+      - name: Run the toast and theme tests alone first (quick, with native crash reports)
+        run: python -X faulthandler -m unittest tests.test_toast_theme -v
+
       - name: Run tests
-        run: python -m unittest discover -s tests -t . -v
+        run: python -X faulthandler -m unittest discover -s tests -t . -v

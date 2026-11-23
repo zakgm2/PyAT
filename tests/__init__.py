@@ -12,6 +12,7 @@ Nothing here opens a window: no QApplication is created, and nothing writes the 
 ~/.physicsanalysis/settings.json (a test that touches Options must patch save_settings).
 """
 
+import faulthandler
 import gc
 import os
 import sys
@@ -32,7 +33,23 @@ os.environ.setdefault("PYATCLI_CHECK_RESULTS", "1")
 # an access violation, at a moment that depends on how much has been allocated since (so a change that only adds work to the engine can
 # bring it on). In the app the engine is a process and none of this can happen. So every test ends with a collection on the main thread,
 # when its windows have been closed: nothing is left for the engine thread to free.
+#
+# The same hazard has a second form, on the main thread: a window in a reference cycle (a test's context object holds the toast's event filter, which holds
+# the context) is destroyed whenever the collector happens to run, and if that is in the middle of a Qt call that is walking the widgets (QApplication.setStyle,
+# which every theme change makes) the process dies, silently, at a point that depends on how many objects Python had allocated by then: so on the CI's Python
+# 3.12 and not on the 3.14 it is developed on. So the collector never runs by itself during the tests; what is garbage is collected between tests, here.
+gc.disable()
 _run_one_test = unittest.TestCase.run
+
+
+def _keep_the_native_crash_report():
+    """A crash in native code (Qt) leaves nothing in a CI log unless faulthandler is on and writes to stderr. The error log's own tests switch it to a file, or
+    off, so it is put back after every test: the next crash prints the Python stack of every thread."""
+    try:
+        if sys.__stderr__ is not None:
+            faulthandler.enable(file=sys.__stderr__, all_threads=True)
+    except Exception:                                           # noqa: BLE001 - a diagnostic, never a reason for a test to fail
+        pass
 
 
 def _run_then_collect(self, result=None):
@@ -41,6 +58,8 @@ def _run_then_collect(self, result=None):
     finally:
         if "PyQt6.QtWidgets" in sys.modules:                    # (no windows, no garbage that can hurt)
             gc.collect()
+        _keep_the_native_crash_report()
 
 
+_keep_the_native_crash_report()
 unittest.TestCase.run = _run_then_collect
