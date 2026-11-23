@@ -34,6 +34,7 @@ class OpenedRecording:
     restored: dict = field(default_factory=dict)       # {"splices": n, "markers": n | None, "highlights": ..., "text_annotations": ...}
     warnings: list = field(default_factory=list)
     regression_method: str = "ols"
+    pipeline: dict = field(default_factory=dict)       # every pipeline option's value in force for this recording (PyATCLI.pipeline): what the dF/F, filter, smoothing and z-score were made with
 
 
 def add_display_colours(cache):
@@ -64,7 +65,7 @@ def opened_from_wire(wired):
         original_cache=decode_cache(original, directory) if original is not None else None,
         splices=list(wired.get("splices") or []), signal_labels=dict(wired.get("signal_labels") or {}),
         restored=dict(wired.get("restored") or {}), warnings=list(wired.get("warnings") or []),
-        regression_method=wired.get("regression_method") or "ols")
+        regression_method=wired.get("regression_method") or "ols", pipeline=dict(wired.get("pipeline") or {}))
 
 
 def variant_from_wire(wired):
@@ -96,6 +97,7 @@ def adopt(ctx, opened):
     """Makes `opened` the loaded recording: the state a fresh load starts from (no pending splice choice, a clean undo history — Ctrl+Z
     never swaps one recording for another), and lets the engine go of the recording that was loaded before."""
     previous = ctx.recording_id
+    ctx.recording_serial += 1
     ctx.original_cache = opened.original_cache
     ctx._active_splices = [dict(s) for s in opened.splices]
     ctx._undo_stack.clear()
@@ -104,13 +106,17 @@ def adopt(ctx, opened):
     ctx.recording_id = opened.id
     ctx.recording_generation = ctx.engine.generation
     ctx.recording_method = opened.regression_method
+    ctx.recording_pipeline = dict(opened.pipeline)
     ctx._signal_renames = dict(opened.signal_labels)
     if previous is not None and previous != opened.id:
         ctx.engine.request("recording.close", {"id": previous})                  # nobody waits for the answer; a stale id is an error nobody reads
+    ctx.engine.sweep_dead_dirs()                                                 # (the files of an engine that was ended, once nothing maps them)
 
 
 def forget(ctx):
     """The loaded recording is no longer the engine's (a source the engine does not hold took its place)."""
     previous, ctx.recording_id = ctx.recording_id, None
+    ctx.recording_pipeline = {}
+    ctx.recording_serial += 1
     if previous is not None:
         ctx.engine.request("recording.close", {"id": previous})

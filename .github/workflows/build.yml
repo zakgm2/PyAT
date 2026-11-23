@@ -9,6 +9,14 @@ name: Build Executables (Windows + macOS)
 # note, the AGPL license text as LICENSE.txt, and macOS's Gatekeeper
 # first-launch instructions), and attaches both as assets on a GitHub
 # Release for that tag.
+#
+# The `check` job runs first, on a tag: it fails the run, before anything is
+# built or attached to a Release, when the tag, pyproject.toml,
+# __version__, CITATION.cff and CHANGELOG.md do not all name the same
+# version (.github/scripts/check_release.py; tests/test_check_release.py runs
+# the same checks on the repository, so the ordinary tests find a stale
+# number first). Zenodo archives the Release this workflow makes, so a wrong
+# number here would be archived for good.
 on:
   push:
     tags:
@@ -23,7 +31,22 @@ permissions:
   contents: write
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Only a tag is a release; the manual "Run workflow" button (no tag) builds without a Release.
+      - name: Check the tag, the version numbers and the changelog agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: python .github/scripts/check_release.py "$GITHUB_REF_NAME"
+
   build:
+    needs: check
     strategy:
       matrix:
         include:
@@ -42,7 +65,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .
+          pip install ".[all]"
           pip install pyinstaller
 
       # PhysicsAnalysis.spec looks for physicsanalysis_qt/assets/icon.icns
@@ -70,6 +93,23 @@ jobs:
 
       - name: Build with PyInstaller
         run: pyinstaller PhysicsAnalysis.spec
+
+      # PyATCLI loads the TDT and Excel readers by name when a file is opened, which PyInstaller cannot see by reading the code (they are named in
+      # PhysicsAnalysis.spec's hiddenimports): this runs the executable's own `info` and fails the build if it cannot import one.
+      - name: Check the executable has every reader (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dist\PyAT.exe --engine --json info | python packaging/check_frozen_readers.py
+
+      - name: Check the executable has every reader (macOS)
+        if: runner.os == 'macOS'
+        run: dist/PyAT.app/Contents/MacOS/PyAT --engine --json info | python packaging/check_frozen_readers.py
+
+      # The BSD, MIT and Apache licences of the bundled packages require their notice and licence text to travel with a binary, and the GPL and LGPL ones
+      # (PyQt6, Qt, tdt) their text and where to get the source: collected from what is installed here, which is what the executable contains
+      # (packaging/collect_licences.py; tests/test_third_party_notices.py runs it on the development environment).
+      - name: Collect the third-party licences
+        run: python packaging/collect_licences.py dist/THIRD_PARTY_NOTICES.txt
 
       # Not code-signed/notarized (that needs a paid $99/year Apple
       # Developer account) - without it, Gatekeeper blocks a plain
@@ -100,13 +140,13 @@ jobs:
       - name: Zip the build (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path dist\PyAT.exe, dist\README.txt, dist\THANK_YOU.txt, dist\LICENSE.txt -DestinationPath ${{ matrix.asset_name }}
+        run: Compress-Archive -Path dist\PyAT.exe, dist\README.txt, dist\THANK_YOU.txt, dist\LICENSE.txt, dist\THIRD_PARTY_NOTICES.txt -DestinationPath ${{ matrix.asset_name }}
 
       - name: Zip the build (macOS)
         if: runner.os == 'macOS'
         run: |
           cd dist
-          zip -r ../${{ matrix.asset_name }} PyAT.app README.txt THANK_YOU.txt LICENSE.txt MACOS_INSTALL.md
+          zip -r ../${{ matrix.asset_name }} PyAT.app README.txt THANK_YOU.txt LICENSE.txt THIRD_PARTY_NOTICES.txt MACOS_INSTALL.md
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7

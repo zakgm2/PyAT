@@ -13,17 +13,27 @@ dataset with no applicable custom tool can say so explicitly instead of
 just not showing a menu.
 
 Adding a future custom tool means adding one entry to _CUSTOM_TOOLS, not
-new UI plumbing.
+new UI plumbing. (`requires_source: None` is a tool for any kind of recording.)
 """
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
 
+from .event_compare import launch_event_compare
 from .event_peth import launch_event_peth
+from .overview import launch_recording_overview
 from .peak_finder import launch_peak_finder
 from ..app.window_fit import fit_to_screen
 
 _CUSTOM_TOOLS = [
+    {
+        "label": "Recording Overview (Z-score of the whole recording)…",
+        "tooltip": "The whole recording's traces one above another — control, signal, control fit, "
+                   "ΔF/F — with the Z-score of the whole recording. Any recording; for a TDT "
+                   "recording it shows what motion correction did.",
+        "requires_source": None,
+        "launch": launch_recording_overview,
+    },
     {
         "label": "Event PETH (Z-score all occurrences)…",
         "tooltip": "Pick an event/marker name — Z-scores every occurrence of it "
@@ -31,6 +41,14 @@ _CUSTOM_TOOLS = [
                    "the trial-averaged trace, so you can check consistency across trials.",
         "requires_source": "TDT",
         "launch": launch_event_peth,
+    },
+    {
+        "label": "Compare Events (overlay average Z-scores)…",
+        "tooltip": "Tick several events and overlay the average Z-score of each on one plot, "
+                   "with each event's peak, latency and area side by side — each event "
+                   "analysed exactly as in Event PETH.",
+        "requires_source": "TDT",
+        "launch": launch_event_compare,
     },
     {
         "label": "Find Significant Peaks…",
@@ -56,7 +74,7 @@ def launch_custom_statistics(ctx):
 
     dlg = QDialog(ctx.win)
     dlg.setWindowTitle("Custom Statistics")
-    fit_to_screen(dlg, 420, 240 if tools else 160)
+    fit_to_screen(dlg, 440, 340 if tools else 160)
     layout = QVBoxLayout(dlg)
 
     if not tools:

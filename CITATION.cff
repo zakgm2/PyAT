@@ -6,8 +6,8 @@ cff-version: 1.2.0
 message: "If you use PyAT in your research, please cite it using the metadata below."
 title: "PyAT: Python Analysis Tool"
 type: software
-version: "4.1.1"
-date-released: "2026-11-05"
+version: "4.2.0"
+date-released: "2026-11-22"
 doi: "10.5281/zenodo.23994251"
 repository-code: "https://github.com/zakgm2/PyAT"
 url: "https://github.com/zakgm2/PyAT"

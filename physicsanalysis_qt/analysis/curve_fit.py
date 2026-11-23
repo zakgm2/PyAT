@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from ..app import errorlog
 from ..app.toasts import show_error
+from ..ui.workspace import present
 from .analysis_picker import add_done_button, disarm_analysis
 from .dispatch import add_stats_export_buttons, export_figure_to_file, get_window
 from ..backend import api
@@ -28,6 +29,7 @@ from .. import figures
 from .result_window import report_label
 from .windows import UNKNOWN_COLOR, channel_colors, channel_groups, column, request_analysis
 from ..app.window_fit import fit_to_screen
+from ..edit.figure_attributes import EditableFigure
 
 
 class CurveFitDialog(QDialog):
@@ -79,6 +81,7 @@ class CurveFitDialog(QDialog):
         self.sub_fig = figures.new_curve_fit_figure()
         self.sub_ax = None                       # made by each draw (figures.draw_curve_fit)
         self.sub_canvas = FigureCanvasQTAgg(self.sub_fig)
+        self.editable_figure = EditableFigure(ctx, self, self.sub_fig, self.sub_canvas)      # Edit Attributes edits this figure (edit/figure_attributes.py)
         layout.addWidget(self.sub_canvas, stretch=1)
 
         btn_row = QHBoxLayout()
@@ -177,7 +180,7 @@ class CurveFitDialog(QDialog):
         self.sub_ax = figures.draw_curve_fit(
             self.sub_fig, fig_channels, model_name=model_name, t1=t1, t2=t2, view_start=view_start, view_end=view_end,
             x_label=self.clean_xlbl, y_label=self.clean_ylbl)
-        self.sub_canvas.draw()
+        self.editable_figure.drawn(now=True)
 
         divider = "\n" + "-" * 60 + "\n"
         self.result_lbl.setText(divider.join(lines_text) or "No data found.")
@@ -202,4 +205,4 @@ def launch_curve_fit(ctx, source_line, p1_tuple, p2_tuple):
     disarm_analysis(ctx)  # an armed Analysis tool is good for one run (unless it's set to persist)
     errorlog.action("analysis", tool="Curve Fit")
     dlg = CurveFitDialog(ctx.win, ctx, source_line, p1_tuple, p2_tuple)
-    dlg.exec()
+    present(ctx, dlg, "Curve Fit")

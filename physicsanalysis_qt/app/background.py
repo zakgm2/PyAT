@@ -15,19 +15,25 @@ Progress: give run_engine a `label` and the request gets a progress toast (toast
 engine's live percentage and what it is doing. A caller that must tell failures apart gives on_failure(error)
 instead of on_error: it gets the BackendError, whose .code says what kind of failure it was.
 
-cancel_running(ctx) asks the engine to stop the request the window is waiting for (at its next progress
-report; Esc does it from the main window); the request then fails with code "cancelled": on_error is not
-called for that (a "Cancelled" toast says so), on_failure is.
+cancel_running(ctx) asks the engine to stop the request the window is waiting for (the progress toast's Cancel button, and Esc from the main
+window, do it). The engine notices at its next progress report, so a task that is in one long call can go on for a long time: if it has not stopped
+STOP_AFTER_S seconds later, or the button (now "Stop now") or Esc is pressed again, the engine process is ended (EngineClient.abort), which stops the
+work at once and gives all its memory back. The request then fails with code "cancelled": on_error is not called for that (a "Cancelled" toast says
+so), on_failure is. An ended engine took the recordings it held with it, so the recording on screen is opened again in the new one
+(loading/common.reconnect_recording) and analyses go on working; the window keeps what it has, so nothing unsaved is lost.
 """
 
 import concurrent.futures
 import queue
 import time
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 
 from . import errorlog
 from .toasts import ProgressToast, show_window_toast
+
+
+STOP_AFTER_S = 4.0         # a cancel the engine has not acted on by then ends the engine
 
 
 class _EngineBridge(QObject):
@@ -134,7 +140,7 @@ def run_engine(ctx, method, params, on_success, on_error=None, label=None, on_fa
             ctx._bg_extra.add(b)
 
     # The toast is wired up BEFORE on_success/on_error: it is gone before a success handler opens a dialog.
-    toast = _new_toast(ctx, label, pump=False)
+    toast = _new_toast(ctx, label, pump=False, cancellable=exclusive)
     if toast is not None:
         bridge.progress.connect(toast.update, queued)
         bridge.finished.connect(lambda _result: toast.update(1.0, "Done"), queued)     # (an analysis that reports nothing still ends at 100%)
@@ -156,7 +162,11 @@ def run_engine(ctx, method, params, on_success, on_error=None, label=None, on_fa
 
     def _err(error):
         _release()
+        reconnect = error.engine_ended and error.cancelled and not getattr(ctx, "_reconnecting", False)
         _deliver_failure(error)
+        if reconnect:                                                   # the engine was ended to stop this: it took the recording with it
+            from ..loading.common import reconnect_recording
+            reconnect_recording(ctx)
 
     bridge.finished.connect(_ok, queued)
     bridge.failed.connect(_err, queued)
@@ -184,19 +194,43 @@ def run_engine(ctx, method, params, on_success, on_error=None, label=None, on_fa
 
 
 def cancel_running(ctx):
-    """Asks the engine to stop the request the window is waiting for, if there is one. Returns True if there was one."""
+    """Stops the request the window is waiting for, if there is one; returns True if there was one. The first call asks the engine to stop it (at
+    its next progress report) and the toast says "Stopping…"; if it is still running STOP_AFTER_S seconds later, or this is called again, the
+    engine is ended (abort_running)."""
     request = ctx._bg_request
     if request is None or request.done():
         return False
+    if getattr(request, "stopping", False):
+        return abort_running(ctx)
+    request.stopping = True
     request.cancel()
+    toast = getattr(ctx, "_progress_toast", None)
+    if toast is not None and hasattr(toast, "stopping"):
+        toast.stopping()
+    QTimer.singleShot(int(STOP_AFTER_S * 1000), lambda: _stop_if_still_running(ctx, request))
     return True
 
 
-def _new_toast(ctx, label, pump):
-    """A started ProgressToast for `label`, registered on ctx; None if there is no label."""
+def abort_running(ctx):
+    """Ends the analysis engine to stop the request the window is waiting for (EngineClient.abort). Returns True if there was one to stop."""
+    request = ctx._bg_request
+    if request is None or request.done():
+        return False
+    errorlog.action("task_aborted", label=getattr(request, "method", None))
+    return ctx.engine.abort(request)
+
+
+def _stop_if_still_running(ctx, request):
+    if ctx._bg_request is request and not request.done():
+        abort_running(ctx)
+
+
+def _new_toast(ctx, label, pump, cancellable=False):
+    """A started ProgressToast for `label`, registered on ctx; None if there is no label. `cancellable` gives it the Cancel button (not while the
+    work runs on the window's own thread: nothing could be clicked)."""
     if label is None:
         return None
-    toast = ProgressToast(ctx, label, pump=pump)
+    toast = ProgressToast(ctx, label, pump=pump, on_cancel=(lambda: cancel_running(ctx)) if cancellable and not pump else None)
     ctx._progress_toast = toast
     toast.start()
     return toast

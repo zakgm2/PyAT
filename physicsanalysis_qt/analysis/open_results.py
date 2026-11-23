@@ -20,6 +20,7 @@ from ..context import get_export_dir
 from ..app import errorlog
 from ..app.background import run_engine
 from ..app.toasts import show_error
+from ..ui.workspace import present
 from .group.run import results_from_tables
 
 FILE_FILTER = ("Results (*.provenance.json analysis_settings.json *.csv);;Provenance records (*.provenance.json);;"
@@ -51,7 +52,7 @@ def open_results(ctx, path=None):
 
 
 def show_results(ctx, answer):
-    """Opens the window for a results.open answer and waits for it to be closed."""
+    """Opens the window for a results.open answer, as a tab (they come from files, so they belong to no recording and stay when it changes)."""
     from .figure_window import ResultsFigureDialog                      # (the windows are loaded when one is shown)
     from .group.results_dialog import GroupResultsDialog
 
@@ -60,7 +61,8 @@ def show_results(ctx, answer):
     errorlog.action("results_opened", kind=kind or "table", n_tables=len(frames))
     if kind == "group_analysis":
         results = results_from_tables(frames, answer["parameters"], answer["notes"], answer["software"], answer["files"])
-        GroupResultsDialog(ctx.win, ctx, results, directory).exec()
+        present(ctx, GroupResultsDialog(ctx.win, ctx, results, directory), "Group results", recording=False)
         return
     fig = figures.build_figure(frames, kind, answer["parameters"])
-    ResultsFigureDialog(ctx.win, ctx, fig, os.path.basename(answer["path"]), directory).exec()
+    name = os.path.basename(answer["path"])
+    present(ctx, ResultsFigureDialog(ctx.win, ctx, fig, name, directory), f"Results — {name}", recording=False)

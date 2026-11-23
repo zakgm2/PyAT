@@ -105,7 +105,7 @@ class TestValidatingAStudy(StudyCase):
         (df,) = shown
         self.assertEqual(len(df), 1)
         self.assertTrue(0.0 <= float(df["p_value_fdr"].iloc[0]) <= 1.0)
-        self.assertEqual(field_study_validation._verdict(float(df["p_value_fdr"].iloc[0]), float(df["ci_lower"].iloc[0])).__class__, str)
+        self.assertIsInstance(df["verdict"].iloc[0], str)                                       # (the read of the numbers comes from the analysis code: nothing to work out here)
 
     def test_no_study_loaded_is_a_message(self):
         self.ctx.study_data = None

@@ -16,6 +16,7 @@ Each port is what one part of the app asks for:
     view        what the main plot shows (its lines, range and markers, as data), which both plot engines and Export View share
     stats       the arithmetic the Event PETH window redoes when trials are ticked or unticked, and what the figures it draws are made of
     outputs     where an export lands under the Output folder
+    pipeline    the choices the processing makes (the dF/F baseline, the filter, ...) as data, for the Options window to offer
 
 Every port is a Protocol: an object with these members satisfies it, whatever it is made of. Drawing is not behind a port: the figures are the app's
 own (physicsanalysis_qt/figures), made from the numbers these ports hand over.
@@ -44,6 +45,7 @@ class GroupSettings(Protocol):
     correction: str
     alpha: float
     regression_method: str
+    pipeline: dict            # pipeline options every recording is processed with, {option name: value} (only those that are not their default)
 
     def problems(self) -> Sequence[str]: ...
     def window_problems(self) -> Sequence[str]: ...
@@ -60,7 +62,8 @@ class GroupPort(Protocol):
     correction_labels: Mapping[str, str]
 
     def new_settings(self, **fields: Any) -> GroupSettings:
-        """Settings with every default, except what is given. new_settings() is also how a window reads a default."""
+        """Settings with every default, except what is given. new_settings() is also how a window reads a default. With `pipeline` (the pipeline options every
+        recording is to be processed with) the smoothing window and the baseline start from what those options say, unless given."""
 
     def default_subject_names(self, folders: Sequence[str], base_path: str) -> list[str]: ...
     def marker_index(self, scans: Sequence[dict]) -> dict: ...
@@ -74,6 +77,19 @@ class GroupPort(Protocol):
     def measure_units(self, measure: str, signal: str) -> str:
         """The units a measure is in, as text."""
 
+    def pooled_subject_values(self, means: Any, measure: str, groups: Mapping[str, Sequence[str]]) -> dict:
+        """{label: {subject: value}} for one measure: each group of markers ({label: [marker names]}, in order) pooled into one value per subject — the
+        average of whichever of the group's markers the subject has data for. `means` is the group results' per-subject, per-marker table."""
+
+    def summary_stats(self, values: Sequence[float]) -> dict:
+        """{"n", "mean", "sem", "q1", "median", "q3"} of a group's values (None where there are too few to say)."""
+
+    def normal_qq(self, values: Sequence[float]) -> dict:
+        """What a normal Q-Q plot draws: {"theoretical", "ordered", "slope", "intercept"} (the points, and the reference line through them)."""
+
+    def significance_stars(self, p: float) -> str:
+        """A p-value as stars: "***", "**", "*", "ns", or "" if it is not a number."""
+
 
 class SavedPort(Protocol):
     highlight_colors: Mapping[str, str]            # the highlighter's choices: name -> colour
@@ -82,6 +98,17 @@ class SavedPort(Protocol):
 
     def default_marker(self) -> dict:
         """What a marker placed now looks like until the person changes it (a fresh dict each time)."""
+
+    def new_marker(self, time: float, label: str = None, color: str = None, fontsize: int = None) -> dict:
+        """A marker as Add Marker stamps it: {"time", "label", "color", "fontsize"}, with the defaults for what is left out. ValueError if the time is not a number."""
+
+    def new_highlight(self, start: float, end: float, color: str = "Yellow") -> dict:
+        """A highlight as the Highlighter makes it: {"start", "end", "color"}, the two times put in order. `color` is one of highlight_colors' names or a hex
+        colour. ValueError, in words, if the two times are the same or the colour is not one."""
+
+    def new_text_annotation(self, x: float, y: float, text: str, fontsize: int = None) -> dict:
+        """A text box as the Text tool places it: {"x", "y", "text", "fontsize"} (x in seconds, y in the plot's units). ValueError if it has no text or
+        its size is not a whole number from 6 to 72."""
 
 
 class RecordingPort(Protocol):
@@ -105,6 +132,13 @@ class RecordingPort(Protocol):
 
     def plan_signal_renames(self, cache: dict, renames: Mapping[str, str]) -> dict:
         """{signal key: new name} for what would change; ValueError, with nothing changed, if two would share a name."""
+
+    def trim_range(self, x: Any, first: float, last: float) -> tuple:
+        """(start, end) of what is left of a recording with time axis `x` after `first` seconds are taken off its start and `last` off its end.
+        ValueError, in words a person can read, if an amount is negative, both are zero, or nothing would be left."""
+
+    def describe_duration(self, seconds: float) -> str:
+        """A length of time for a message: "44 s", "2.5 min" (seconds up to two minutes, minutes beyond)."""
 
 
 class MarkersPort(Protocol):
@@ -174,6 +208,9 @@ class StatsPort(Protocol):
     def group_stats(self, trial_matrix: Any) -> tuple: ...
     def peri_event_from_trace(self, rel_x: Any, y: Any, post: float, bin_width: float = 1.0) -> Any: ...
     def peri_event_matrix(self, time_axis: Any, trial_matrix: Any, post: float, bin_width: float = 1.0) -> Any: ...
+    def bin_ranges(self, edges: Any) -> list:
+        """The names of mean-time bins ("0.0-1.0", "1.0-2.0", ...: "0.00-0.05" for bins of 0.05 s), no two alike: what a table's
+        "Bin <range>s Mean" columns are called. `edges` is a `mean_bins` list ({"bin_start", "bin_end", "mean"} each)."""
     def find_fft_peaks(self, freqs: Any, power: Any, n_peaks: int = 3) -> list:
         """The top peaks of a power spectrum, as [{"freq_hz", "power", "bpm"}] by power."""
 
@@ -190,6 +227,17 @@ class OutputsPort(Protocol):
     def unique_path(self, path: str) -> str: ...
 
 
+class PipelinePort(Protocol):
+    def describe(self) -> dict:
+        """The processing pipeline's choices as plain data: {"steps": [{"name", "title", "sources", "options": [{"name", "key", "kind", "default", "label",
+        "doc", "choices", "minimum", "maximum", "unit"}]}], "defaults": {option name: default}}. `kind` is "choice", "bool", "float", "int" or
+        "seconds_or_none" (a time in seconds, or None for "not set"); a step's `sources` lists the kinds of recording it applies to (["TDT"]), None for all."""
+
+    def problem(self, values: Mapping) -> Any:
+        """Why these options ({option name: value}; the rest are at their defaults) cannot be used, in words a person can read (an unknown option, a value that is
+        not allowed, a choice that contradicts another); None if they can."""
+
+
 class Backend(Protocol):
     saved: SavedPort
     recording: RecordingPort
@@ -199,6 +247,7 @@ class Backend(Protocol):
     view: ViewPort
     stats: StatsPort
     outputs: OutputsPort
+    pipeline: PipelinePort
 
     def software_versions(self, app: Mapping[str, str]) -> dict:
         """The versions the error log starts with: the app (given), the analysis code, Python, the OS, the numerical libraries."""

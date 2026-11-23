@@ -8,25 +8,28 @@ rectangle selector, status bar.
 """
 
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.widgets import RectangleSelector
 from PyQt6.QtCore import QMimeData, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenu, QSizePolicy, QStatusBar, QStackedWidget,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenu, QPushButton, QSizePolicy, QStatusBar, QStackedWidget,
     QToolButton,
 )
 
 from ..app import citation, errorlog
 from ..plot import interaction
+from ..plot.canvas import PictureCanvas
 from ..edit import undo
 from ..app.background import cancel_running
+from ..loading.drop import install_drop
 from ..plot.pg_engine import build_pg_widget, sync_pg_margins
 from ..app.toasts import show_error, show_window_toast
+from ..app.pipeline_dialog import open_pipeline_text
 from ..app.update_check import local_version
 from ..app.window_fit import fit_to_screen
 from .toolbar import build_toolbar
 from .edit_toolbar import build_edit_toolbar
+from .workspace import RecordingTools, Workspace
 
 FEEDBACK_URL = f"{citation.REPO_URL}/issues"
 COFFEE_URL = "https://buymeacoffee.com/zakgm2"
@@ -123,7 +126,6 @@ def build_main_window(ctx):
     root_layout.addWidget(toolbar)
 
     ctx.stacked_plot_widget = _PlotStack(ctx)
-    root_layout.addWidget(ctx.stacked_plot_widget, stretch=1)
 
     _build_matplotlib_canvas(ctx)
     ctx.stacked_plot_widget.addWidget(ctx.canvas)
@@ -134,12 +136,25 @@ def build_main_window(ctx):
     ctx.stacked_plot_widget.setCurrentWidget(_widget_for_engine(ctx))
     sync_pg_margins(ctx)
 
+    # The plot area is the workspace: the recording's plot is its first tab, and each analysis window opens as another along the bottom (ui/workspace.py).
+    ctx.workspace = Workspace(ctx, ctx.stacked_plot_widget)
+    root_layout.addWidget(ctx.workspace, stretch=1)
+    ctx.data_listeners.append(lambda: QTimer.singleShot(0, ctx.workspace.check_basis))     # windows computed from a recording that went are closed
+    ctx.recording_tools = RecordingTools(ctx.workspace)
+    ctx.recording_tools.watch(*edit_toolbar.findChildren(QPushButton),
+                              *(b for b in toolbar.findChildren(QPushButton) if b.text() in ("Reload", "Analysis")),
+                              ctx.plot_signal_button)
+
     ctx.status_bar = QStatusBar()
     ctx.win.setStatusBar(ctx.status_bar)
     ctx.status_bar.showMessage("X: -- | Y: -- | Pt: --")
+    ctx.status_bar.addPermanentWidget(_build_pipeline_button(ctx))
     ctx.status_bar.addPermanentWidget(_build_coffee_button())
     ctx.status_bar.addPermanentWidget(_build_citation_button(ctx))
     ctx.status_bar.addPermanentWidget(_build_feedback_button(ctx))
+
+    # Drop a file or a folder anywhere on the window to open it, as the Open menu would (loading/drop.py).
+    install_drop(ctx)
 
     # Ctrl+Z: undoes the last marker/splice edit (edit/undo.py), one step at a time — not a general
     # app-wide undo (Edit Attributes, Options, plot engine, etc. are untouched by it). Default
@@ -165,6 +180,19 @@ def _undo_last_action(ctx):
     else:
         errorlog.action("undo", what=label)
         show_window_toast(ctx, f"Undid: {label}")
+
+
+def _build_pipeline_button(ctx):
+    """Copy pipeline, in the status bar: the methods paragraph for the recording on screen — how it was processed, with the values chosen (Options →
+    Pipeline options) and the software versions — to read, copy or save (app/pipeline_dialog.py)."""
+    btn = QToolButton()
+    btn.setText("Copy pipeline")
+    btn.setToolTip("Copy pipeline — the methods paragraph for this recording: how it was processed, with the values chosen and the software versions")
+    btn.setAutoRaise(True)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.clicked.connect(lambda: open_pipeline_text(ctx))
+    ctx.btn_copy_pipeline = btn
+    return btn
 
 
 def _build_coffee_button():
@@ -244,7 +272,7 @@ def _build_citation_button(ctx):
 def _build_matplotlib_canvas(ctx):
     ctx.fig = Figure(figsize=(8, 4), dpi=100)
     ctx.ax = ctx.fig.add_subplot(111)
-    ctx.canvas = FigureCanvasQTAgg(ctx.fig)
+    ctx.canvas = PictureCanvas(ctx.fig)
     ctx.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     ctx.canvas.mpl_connect('button_press_event', lambda e: interaction.on_press(ctx, e))
@@ -254,6 +282,7 @@ def _build_matplotlib_canvas(ctx):
     zoom_fun = interaction.zoom_factory(ctx, base_scale=1.1)
     ctx.canvas.mpl_connect('scroll_event', zoom_fun)
     ctx.canvas.mpl_connect('resize_event', lambda e: interaction.on_resize(ctx, e))
+    ctx.canvas.mpl_connect('draw_event', lambda e: interaction.on_draw(ctx, e))     # (before the selector's own: it must see the hover marker hidden)
 
     ctx.rect_selector = RectangleSelector(
         ctx.ax, lambda eclick, erelease: interaction.on_select(ctx, eclick, erelease),

@@ -255,9 +255,21 @@ def _bulk_group_key(m):
     return m['store'] if m.get('phase') is not None else m['label']
 
 
+DEFAULT_MARKER_FONT_SIZE = 8      # what a marker's name is written in unless it was given a size (figures/view.py's draw_markers)
+MIN_MARKER_FONT_SIZE = 4
+
+
+def marker_font_size(text, default=DEFAULT_MARKER_FONT_SIZE):
+    """A marker's font size from what was typed: a whole number of points, not below MIN_MARKER_FONT_SIZE; `default` if it is not a number."""
+    try:
+        return max(MIN_MARKER_FONT_SIZE, int(text))
+    except (TypeError, ValueError):
+        return default
+
+
 class AddMarkerDialog(QDialog):
     """Add Marker entry point: bulk-add every auto-detected marker of a
-    chosen store, or configure a custom name/colour/fontsize and start
+    chosen store (with the font size chosen for their names), or configure a custom name/colour/fontsize and start
     repeated click-to-place stamping (Snipping-Tool style)."""
 
     def __init__(self, ctx):
@@ -325,6 +337,16 @@ class AddMarkerDialog(QDialog):
             debounce_row.addWidget(QLabel("s of each other"))
             debounce_row.addStretch(1)
             l1.addLayout(debounce_row)
+
+            # The size of the names written along the markers Add Selected puts on the plot (the same choice Place Custom Markers has below).
+            font_row = QHBoxLayout()
+            font_row.addWidget(QLabel("Font size:"))
+            self.e_auto_fontsize = QLineEdit(str(DEFAULT_MARKER_FONT_SIZE))
+            self.e_auto_fontsize.setFixedWidth(50)
+            self.e_auto_fontsize.setToolTip("The size of the name written along each marker that Add Selected adds (4 or more).")
+            font_row.addWidget(self.e_auto_fontsize)
+            font_row.addStretch(1)
+            l1.addLayout(font_row)
 
             store_btn_row = QHBoxLayout()
             btn_add_selected = QPushButton("Add Selected")
@@ -518,6 +540,9 @@ class AddMarkerDialog(QDialog):
         detected = self.ctx.cache.get('detected_markers', [])
         to_add = [dict(m) for m in detected
                   if _bulk_group_key(m) in selected_stores and self._phase_allowed(m)]
+        fontsize = marker_font_size(self.e_auto_fontsize.text())
+        for m in to_add:
+            m['fontsize'] = fontsize
 
         debounced_out = 0
         if self.chk_debounce.isChecked():
@@ -621,10 +646,7 @@ class AddMarkerDialog(QDialog):
         label = self.e_name.text().strip()  # "" is allowed — an unnamed marker, just a tick
         checked = self.color_group.checkedButton()
         color = checked.text() if checked else "green"
-        try:
-            fontsize = max(4, int(self.e_fontsize.text()))
-        except ValueError:
-            fontsize = 8
+        fontsize = marker_font_size(self.e_fontsize.text())
         self.ctx.marker_stamp = {"label": label, "color": color, "fontsize": fontsize}
         self.start_requested = True
         self.accept()
@@ -668,7 +690,7 @@ def place_marker(ctx, t):
     if ctx.cache is None:
         return
     before = undo.snapshot(ctx)
-    ctx.cache['markers'].append({"time": t, **ctx.marker_stamp})
+    ctx.cache['markers'].append(api.saved.new_marker(t, **ctx.marker_stamp))
     undo.push(ctx, "placed a marker", before)
     simple_plot(ctx)
 

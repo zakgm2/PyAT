@@ -28,12 +28,15 @@ __all__ = ["EXPORT_MAX_POINTS", "GRID_COLOR", "build_view", "export_view", "view
 
 def view_traces(ctx):
     """(traces, title, x label, y label) for what the main plot draws for the loaded recording, before any edit of its title, labels
-    or legend — figures.view_traces for the signals ticked in the Plot menu, with the user's colour overrides. Records each
-    line's default colour in ctx._trace_default_colors, which is what Edit Graph Attributes shows and resets to."""
+    or legend — figures.view_traces for the signals ticked in the Plot menu, with the user's colour overrides and point size. Records each
+    line's default colour in ctx._trace_default_colors and the size of dot the lines have by default in ctx._trace_default_point_size, which
+    is what Edit Graph Attributes shows and resets to."""
     traces, title, x_label, y_label = figures.view_traces(
-        ctx.cache, signals=ctx.plot_signals, active=ctx.plot_signal, line_colors=ctx.plot_attrs["line_colors"])
+        ctx.cache, signals=ctx.plot_signals, active=ctx.plot_signal, line_colors=ctx.plot_attrs["line_colors"],
+        point_size=ctx.plot_attrs.get("point_size"))
     for t in traces:
         ctx._trace_default_colors[t.key] = t.default_color
+    ctx._trace_default_point_size = max((t.default_markersize for t in traces), default=0.0)
     return traces, title, x_label, y_label
 
 
@@ -72,8 +75,8 @@ def export_view(ctx):
     if ctx.cache is None:
         show_error(ctx, "No plot to export.")
         return
-    from .figure_export import export_figure
+    from .figure_export import EDIT_POINTS_NOTE, export_figure
     view = build_view(ctx)
     provenance = {"kind": "view", "parameters": view.parameters()}           # the range, signals and attributes: pl.reproduce_record replays its data CSV
     export_figure(ctx, view.fig, "View", provenance=provenance, data_writer=view.write_data,
-                  stem=f"{ctx.cache['store']}_view")
+                  stem=f"{ctx.cache['store']}_view", no_points_note=EDIT_POINTS_NOTE)

@@ -24,6 +24,7 @@ class BackendError(Exception):
         self.code = code
         self.hint = hint
         self.type_name = type_name
+        self.engine_ended = False          # True: the engine process was ended to stop a task (EngineClient.abort), and the recordings it held went with it
 
     @classmethod
     def from_info(cls, info):

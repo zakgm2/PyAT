@@ -6,6 +6,7 @@ importable, so nothing else would notice).
 """
 
 import ast
+import importlib.util
 import os
 import re
 import unittest
@@ -35,6 +36,29 @@ class TestSpecBundlesTheFigureBackends(unittest.TestCase):
         for name in hidden_imports():
             if name.startswith("matplotlib."):
                 importlib.import_module(name)
+
+
+def spec_excludes():
+    with open(SPEC, encoding="utf-8") as f:
+        found = re.search(r"excludes=(\[[^\]]*\])", f.read())
+    assert found, "PhysicsAnalysis.spec has no excludes list"
+    return set(ast.literal_eval(found.group(1)))
+
+
+@unittest.skipUnless(importlib.util.find_spec("PyATCLI._optional"), "needs a PyATCLI with the optional extras")
+class TestSpecBundlesTheReadersPyATCLILoadsByName(unittest.TestCase):
+    """PyATCLI imports the readers of its file types by name when a file is opened, so PyInstaller cannot see them: without them named in the spec the shipped
+    exe opens no TDT tank and no Excel workbook (and nothing from a source run would show it)."""
+
+    def test_every_reader_a_release_has_is_named_and_the_language_model_is_left_out_on_purpose(self):
+        from PyATCLI import _optional
+        hidden, excluded = hidden_imports(), spec_excludes()
+        for extra, modules in _optional.EXTRAS.items():
+            for module in modules:
+                if extra == "fieldstudy":
+                    self.assertIn(_optional.top_level(module), excluded, f"{module} (the {extra} extra) is not bundled on purpose: it must be in the spec's excludes")
+                else:
+                    self.assertIn(module, hidden, f"PhysicsAnalysis.spec must list {module} (the {extra} extra) in hiddenimports or the exe cannot read that file type")
 
 
 if __name__ == "__main__":

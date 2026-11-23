@@ -10,7 +10,7 @@ Markers, and Measure Intervals live in the left icon sidebar
 """
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QKeySequence
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QMenu, QLabel, QToolButton,
 )
@@ -24,13 +24,24 @@ from ..plot.plotting import export_canvas_action
 from ..plot.plot_signal import build_plot_signal_control
 from ..edit.attributes import open_attributes_window
 from ..app.options import open_options_dialog
-from ..app.toasts import show_error
+from ..app.toasts import show_error, show_window_toast
 from ..analysis.window_settings import init_window_settings
 from ..analysis.analysis_picker import open_analysis_menu
 from ..fieldstudy.results import launch_field_study_results
 from ..fieldstudy.validation import launch_field_study_validation
 from ..analysis.custom_statistics import launch_custom_statistics
 from ..analysis.open_results import open_results
+
+EXPORT_VIEW_SHORTCUT = "Ctrl+Shift+S"          # Export View: the plot as it is on screen, redrawn as a publication figure
+
+
+def export_view(ctx):
+    """Export View exports what is in front: the recording's plot, or the figure of the analysis window in its tab (its own Export Plot)."""
+    page = ctx.workspace.front_page() if getattr(ctx, "workspace", None) is not None else None
+    if page is None:
+        export_canvas_action(ctx)
+    elif not page.export_plot():
+        show_window_toast(ctx, "This window has no figure to export.")
 
 
 def _reload_current(ctx):
@@ -119,10 +130,16 @@ def build_toolbar(ctx):
     layout.addWidget(QLabel("|"))
 
     btn_export_view = QPushButton("Export View")
-    btn_export_view.clicked.connect(lambda: export_canvas_action(ctx))
+    btn_export_view.setShortcut(QKeySequence(EXPORT_VIEW_SHORTCUT))              # (a button's own shortcut: off while the button is, i.e. with an analysis tab in front)
+    btn_export_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)                        # (so the space bar does not press it again after a click)
+    btn_export_view.setToolTip(f"Export View ({QKeySequence(EXPORT_VIEW_SHORTCUT).toString(QKeySequence.SequenceFormat.NativeText)}) — the plot as it is on "
+                               "screen, redrawn as a publication figure; with an analysis tab in front, that window's figure")
+    btn_export_view.clicked.connect(lambda: export_view(ctx))
     layout.addWidget(btn_export_view)
+    ctx.btn_export_view = btn_export_view
 
     btn_edit_attrs = QPushButton("Edit Attributes")
+    btn_edit_attrs.setToolTip("Titles, labels, colours, points and the legend of the plot — or of the figure of the analysis window in front")
     btn_edit_attrs.clicked.connect(lambda: open_attributes_window(ctx))
     layout.addWidget(btn_edit_attrs)
 

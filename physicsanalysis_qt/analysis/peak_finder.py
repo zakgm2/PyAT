@@ -34,6 +34,7 @@ from ..backend.recordings import recording_ref
 from ..app.background import run_engine
 from ..edit.marker_labels import marker_display_label
 from ..app.toasts import show_error, show_window_toast
+from ..ui.workspace import present
 from .dispatch import add_stats_export_buttons, get_window
 from .event_peth import _group_markers_by_name
 from ..app.window_fit import fit_to_screen
@@ -330,12 +331,16 @@ def _add_peak_markers(ctx, entries):
 class _ScanAllTypesResultsDialog(QDialog):
     """One row per event name, sorted by hit rate — lets you see at a
     glance which event types actually correspond to a real signal
-    response before choosing what (if anything) to add to the plot."""
+    response before choosing what (if anything) to add to the plot.
+    The rows (counts, hit rate, average z, the chance level, their order) are the
+    analysis code's: `summary` is what the engine's compute.peaks answers with
+    (PyATCLI.peak_scan_summary); this window only shows them."""
 
-    def __init__(self, parent, ctx, by_event, provenance=None, nulls=None):
+    def __init__(self, parent, ctx, by_event, provenance=None, nulls=None, summary=None):
         super().__init__(parent)
         self.ctx = ctx
         self.by_event = by_event  # {name: [result dicts]}
+        self.summary = list(summary or [])  # [{"event", "occurrences", "found", "hit_rate", "avg_z", "chance_hit_rate", "p_shuffle", "p_holm"}], best first
         self.provenance = provenance
         self.nulls = nulls or {}  # {name: shuffle-null dict}, empty when it was not asked for
         self.setWindowTitle("Peak Scan — All Event Types")
@@ -354,11 +359,7 @@ class _ScanAllTypesResultsDialog(QDialog):
             note.setWordWrap(True)
             layout.addWidget(note)
 
-        self.rows = sorted(
-            by_event.items(),
-            key=lambda kv: (sum(r["found"] for r in kv[1]) / len(kv[1])) if kv[1] else 0,
-            reverse=True,
-        )
+        self.rows = [(row["event"], by_event[row["event"]]) for row in self.summary]
 
         columns = ["Event", "Occurrences", "Found", "Hit Rate", "Avg Z (found only)"]
         if self.nulls:
@@ -366,21 +367,16 @@ class _ScanAllTypesResultsDialog(QDialog):
         table = QTableWidget(len(self.rows), len(columns))
         table.setHorizontalHeaderLabels(columns)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        for row, (name, results) in enumerate(self.rows):
-            n_total = len(results)
-            found = [r for r in results if r["found"]]
-            hit_rate = len(found) / n_total if n_total else 0.0
-            avg_z = sum(r["z_score"] for r in found) / len(found) if found else float("nan")
-            table.setItem(row, 0, QTableWidgetItem(name))
-            table.setItem(row, 1, QTableWidgetItem(str(n_total)))
-            table.setItem(row, 2, QTableWidgetItem(str(len(found))))
-            table.setItem(row, 3, QTableWidgetItem(f"{hit_rate:.0%}"))
-            table.setItem(row, 4, QTableWidgetItem(f"{avg_z:.2f}" if found else "--"))
+        for row, entry in enumerate(self.summary):
+            table.setItem(row, 0, QTableWidgetItem(entry["event"]))
+            table.setItem(row, 1, QTableWidgetItem(str(entry["occurrences"])))
+            table.setItem(row, 2, QTableWidgetItem(str(entry["found"])))
+            table.setItem(row, 3, QTableWidgetItem(f"{entry['hit_rate']:.0%}"))
+            table.setItem(row, 4, QTableWidgetItem("--" if entry["avg_z"] is None else f"{entry['avg_z']:.2f}"))
             if self.nulls:
-                chance, p_count, p_holm = self._null_values(name)
-                table.setItem(row, 5, QTableWidgetItem("--" if chance is None else f"{chance:.0%}"))
-                table.setItem(row, 6, QTableWidgetItem(_p_text(p_count)))
-                table.setItem(row, 7, QTableWidgetItem(_p_text(p_holm)))
+                table.setItem(row, 5, QTableWidgetItem("--" if entry["chance_hit_rate"] is None else f"{entry['chance_hit_rate']:.0%}"))
+                table.setItem(row, 6, QTableWidgetItem(_p_text(entry["p_shuffle"])))
+                table.setItem(row, 7, QTableWidgetItem(_p_text(entry["p_holm"])))
         table.itemDoubleClicked.connect(lambda item: self._view_details(item.row()))
         layout.addWidget(table)
         layout.addWidget(QLabel("Double-click a row for that event's per-occurrence details."))
@@ -391,19 +387,13 @@ class _ScanAllTypesResultsDialog(QDialog):
         btn_row.addWidget(btn_add_all)
         add_stats_export_buttons(
             ctx, self, btn_row,
-            get_clipboard_text=lambda: "\n".join(
-                f"{name}: {sum(r['found'] for r in results)}/{len(results)} found"
-                for name, results in self.rows
-            ),
+            get_clipboard_text=lambda: "\n".join(f"{e['event']}: {e['found']}/{e['occurrences']} found" for e in self.summary),
             csv_default_name="PeakScan_AllEventTypes",
             csv_header=columns,
             get_csv_rows=lambda: [
-                [name, len(results), sum(r["found"] for r in results),
-                 f"{(sum(r['found'] for r in results) / len(results)) if results else 0.0:.4f}",
-                 (f"{sum(r['z_score'] for r in results if r['found']) / max(1, sum(r['found'] for r in results)):.4f}"
-                  if any(r['found'] for r in results) else "")]
-                + ([_p_csv(v) for v in self._null_values(name)] if self.nulls else [])
-                for name, results in self.rows
+                [e["event"], e["occurrences"], e["found"], f"{e['hit_rate']:.4f}", "" if e["avg_z"] is None else f"{e['avg_z']:.4f}"]
+                + ([_p_csv(e["chance_hit_rate"]), _p_csv(e["p_shuffle"]), _p_csv(e["p_holm"])] if self.nulls else [])
+                for e in self.summary
             ],
             provenance=provenance,
         )
@@ -411,13 +401,6 @@ class _ScanAllTypesResultsDialog(QDialog):
         btn_close.clicked.connect(self.accept)
         btn_row.addWidget(btn_close)
         layout.addLayout(btn_row)
-
-    def _null_values(self, name):
-        """(chance hit rate, p (shuffle), p (Holm)) of one event type; None where the library could not measure it."""
-        null = self.nulls.get(name)
-        if not null or not null.get("available"):
-            return None, None, None
-        return null["chance_hit_rate"], null["p_count"], null.get("p_count_holm")
 
     def _view_details(self, row):
         name, results = self.rows[row]
@@ -522,8 +505,8 @@ def launch_peak_finder(ctx):
             n_types = len(result)
             n_found = sum(1 for results in result.values() for r in results if r["found"])
             show_window_toast(ctx, f"Scanned {n_types} event type(s), {n_found} aligned peak(s) found")
-            summary_dlg = _ScanAllTypesResultsDialog(ctx.win, ctx, result, provenance=prov, nulls=answer.get("null"))
-            summary_dlg.exec()
+            summary_dlg = _ScanAllTypesResultsDialog(ctx.win, ctx, result, provenance=prov, nulls=answer.get("null"), summary=answer["summary"])
+            present(ctx, summary_dlg, "Peak Scan")
             return
 
         results = result
@@ -536,7 +519,7 @@ def launch_peak_finder(ctx):
         )
         null = next(iter(answer["null"].values())) if answer.get("null") else None
         results_dlg = _AlignmentResultsDialog(ctx.win, ctx, dlg.event_name, results, provenance=prov, null=null)
-        results_dlg.exec()
+        present(ctx, results_dlg, f"Peaks — {dlg.event_name}")
 
     def _on_error(msg):
         show_error(ctx, f"Peak finding failed: {msg}")

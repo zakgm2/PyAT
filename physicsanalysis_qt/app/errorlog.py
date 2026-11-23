@@ -50,7 +50,7 @@ MAX_BYTES = 1_000_000
 BACKUP_COUNT = 4
 KEEP_NATIVE_ARCHIVES = 3
 # the settings that change what the app does, listed in the header (never a path: output_folder is just "set"/"not set")
-HEADER_SETTINGS = ("plot_engine", "theme", "regression_method", "background_loading", "decimate_max_points")
+HEADER_SETTINGS = ("plot_engine", "theme", "regression_method", "pipeline", "background_loading", "decimate_max_points")
 
 # at most this many error dialogs per window of time, and the same error not twice within a while
 DIALOG_WINDOW_S = 60.0

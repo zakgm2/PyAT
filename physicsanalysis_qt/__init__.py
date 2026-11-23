@@ -31,24 +31,28 @@ here is what has to be on screen or in a user's hands. Split by concern:
                         code: ports.py is what the app asks for, library.py the one module that answers with PyATCLI. A
                         window imports `backend.api`, never the library (tests/test_backend_boundary.py fails if one does); contract.py
                         is what the app needs of the engine, checked against its `ready` message so a mismatched library is refused
-  loading/            - the Open dialogs (TDT, Oxysoft, generic tabular, PT2); they ask the engine to open the file
+  loading/            - the Open dialogs (TDT, Oxysoft, generic tabular, PT2) and drag and drop (drop.py: a file or folder dropped on the window opens like the Open menu; ui/drop_overlay.py is what the window shows for it); they ask the engine to open the file
                         (loading/common.py) and keep the result in ctx.cache
   plot/               - the main plot, in either engine
       plotting.py       the matplotlib engine: simple_plot(), attribute re-application
       pg_engine.py      the PyQtGraph engine
       interaction.py, pg_interaction.py   zoom/pan/hover/rect-select per engine
+      canvas.py         the matplotlib engine's Qt canvas, painting straight from matplotlib's buffer
       plot_signal.py    the toolbar's "Plot:" dropdown (which of a recording's signals to draw)
       fonts.py          golden-ratio figure font sizing
   edit/               - changing what is shown, without touching the recording on disk, and keeping the changes
       markers.py        Add/Edit Marker dialogs and placement/lookup
       marker_labels.py  marker names, bound to the app's store renames (rules: PyATCLI markers.py)
       splice.py         Splice (trim / cut out) orchestration; highlight.py the Highlighter; text_annotation.py the Text tool
-      attributes.py     Edit Attributes dialog; color_picker.py per-trace line colors
+      attributes.py     Edit Attributes dialog (for the recording's plot, or the figure of the analysis window in front); color_picker.py per-trace line colors
+      figure_attributes.py   Edit Attributes for an analysis window's figure (EditableFigure: what was edited is put back after every drawing);
+                        attribute_widgets.py what the two dialogs share (a colour row, the Points section)
       signal_names.py   renaming a recording's signals (Plot menu, Edit Attributes), kept with the recording
       sidecar.py        Save Changes: asks the engine to write markers, highlights, text annotations, signal names and splices next to a recording
       undo.py           Ctrl+Z for marker, splice, highlight and text-box edits
   analysis/           - the Analysis picker and each tool's window (Z-Score, FFT, AUC, Curve Fit, Event
-                        PETH, Peak Finder, Measure Intervals), and analysis/group/ (Group Analysis);
+                        PETH, Compare Events, Recording Overview, Peak Finder, Measure Intervals; each opens as a tab of the main window, ui/workspace.py), and
+                        analysis/group/ (Group Analysis);
                         windows.py is how the click analyses ask the engine (request_analysis) and read its tables
   export/             - getting figures and files out
       outputs.py        where an export lands: <Output>/<data type>/<recording>/
@@ -58,11 +62,13 @@ here is what has to be on screen or in a user's hands. Split by concern:
                         here: reading the range from the engine on screen, the widget's proportions, the Plot menu's signals)
   figures/            - everything that draws, and writes a drawing to a file: draw.py (the analysis windows' figures), group.py (a group
                         analysis's), panels.py, from_tables.py (the figure for a finished analysis's tables: Open Results), view.py (the main
-                        plot's lines and Export View), attributes.py (Edit Graph Attributes' rules), render.py / data.py / labels.py (PNG/TIFF/
+                        plot's lines and Export View), attributes.py (Edit Graph Attributes' rules) and restyle.py (the same for an analysis window's
+                        figure, kept apart from it and put back after every drawing), render.py / data.py / labels.py (PNG/TIFF/
                         PDF/SVG with the data CSV and editable words), style.py. They draw from the numbers the library writes
   fieldstudy/         - the text-field study: open_study.py (the Open dialog), results.py and validation.py (the results
                         viewers), config.py (its local settings)
-  ui/                 - toolbar + main window assembly
+  ui/                 - toolbar + main window assembly; workspace.py is the plot area as tabs (the recording first, then each analysis window, which
+                        pops out into a window and docks back)
 
 Entry point: run_qt.py (run_qt.pyw, the windowed launcher the packaged app is built from, just runs it), at the repo root.
 """
@@ -71,8 +77,8 @@ Entry point: run_qt.py (run_qt.pyw, the windowed launcher the packaged app is bu
 # pyproject.toml on disk to read (see app/update_check.py's local_version()).
 # Bump this together with pyproject.toml's version field on every release
 # — see Deployment Steps.md.
-__version__ = "4.1.1"
+__version__ = "4.2.0"
 
 # The day this version was released; its year is the year in the citation the status bar's citation button copies.
 # Bump it with __version__ (tests/test_citation.py checks both against CITATION.cff).
-__release_date__ = "2026-11-05"
+__release_date__ = "2026-11-22"

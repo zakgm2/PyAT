@@ -232,6 +232,33 @@ class TestPointingAtSomething(FiguresCase):
         with self.assertRaisesRegex(figures.NothingToPlot, "not ones PyAT knows.*apples, pears"):
             draw_path(pd.DataFrame({"apples": ["a"], "pears": ["b"]}))
 
+    def test_the_message_for_a_table_it_does_not_know_does_not_list_hundreds_of_columns(self):
+        wide = pd.DataFrame([list(range(600))], columns=[f"{k / 10:.1f}" for k in range(600)])
+        with self.assertRaises(figures.NothingToPlot) as raised:
+            draw_path(wide)
+        self.assertIn("0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, … (600 columns)", str(raised.exception))
+        self.assertLess(len(str(raised.exception)), 400)
+
+    def test_the_data_behind_an_exported_figure_is_said_to_be_that_and_what_to_open_instead(self):
+        """Export Plot writes the figure and the data behind it, and its record lists those: Open Results cannot redraw a figure from them."""
+        from tests.test_figure_export import event_like_figure
+        base = os.path.join(self.tmp, "EventPETH_Rec_L1P_102349")
+        figures.write_figure_data(event_like_figure(), base)
+        for source in (os.path.join(base + "_data.csv"), os.path.join(base + "_image_1.csv"), self.tmp):
+            with self.subTest(os.path.basename(source)):
+                with self.assertRaises(figures.NothingToPlot) as raised:
+                    draw_path(source)
+                message = str(raised.exception)
+                self.assertIn("data behind a figure that was exported with Export Plot", message)
+                self.assertIn("Export CSV", message)
+                self.assertNotIn("not ones PyAT knows", message)
+                self.assertLess(len(message), 600)                                              # (not the columns of a heatmap)
+
+    def test_a_heatmaps_data_with_its_row_labels_is_recognised_too(self):
+        image = pd.DataFrame({"panel": ["Trials heatmap"], "row": [3], "row_position": [0], "-0.05": [1.0], "0.05": [2.0]})
+        with self.assertRaisesRegex(figures.NothingToPlot, "data behind a figure that was exported with Export Plot"):
+            draw_path({"EventPETH_x_image_1": image})
+
     def test_a_folder_of_tables_with_no_record_plots_its_tables(self):
         result = self.run_kind("zscore_window", {"center_s": 200.0})
         folder = os.path.join(self.tmp, "tables")
@@ -281,6 +308,20 @@ class TestEachEventPethViewOnItsOwn(FiguresCase):
         n_bins = len([c for c in self.result.tables["bins"].columns if c.startswith("Bin ")])
         self.assertEqual(image.get_array().shape, (len(EVENTS) + 1, n_bins))                               # a row per trial and one for the group
         self.assertEqual(fig.axes[0].get_yticklabels()[-1].get_text(), "Group")
+
+    def test_fine_bins_are_labelled_every_few_not_every_one(self):
+        self.result = self.run_kind("event_peth", {"event": "L1P¹", "pre_s": 10, "post_s": 20, "bin_s": 0.05})
+        ax = self.plot_csv("bins").axes[0]
+        self.assertEqual(ax.images[0].get_array().shape[1], 400)                                            # a column for every bin
+        labels = [t.get_text() for t in ax.get_xticklabels()]
+        self.assertLessEqual(len(labels), 30)                                                               # but not a label for each
+        self.assertEqual(labels[:2], ["0.00-0.05s", "0.70-0.75s"])                                          # every 14th bin, named by its edges
+        self.assertEqual(len(set(labels)), len(labels))
+
+    def test_coarse_bins_are_all_labelled(self):
+        ax = self.plot_csv("bins").axes[0]
+        self.assertEqual([t.get_text() for t in ax.get_xticklabels()][:3], ["0.0-1.0s", "1.0-2.0s", "2.0-3.0s"])
+        self.assertEqual(len(ax.get_xticklabels()), 20)
 
     def test_the_whole_result_is_still_just_the_heatmap_and_the_mean(self):
         self.assertEqual(len(self.plot().axes), 3)                                                    # not a panel for every table

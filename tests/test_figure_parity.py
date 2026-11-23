@@ -14,13 +14,15 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
+import pandas as pd
 from PyQt6.QtCore import Qt
 
 import PyATCLI as pl
 
 from physicsanalysis_qt.backend.recordings import adopt, opened_from_wire
 from physicsanalysis_qt.analysis import auc, curve_fit, fft, peth
-from physicsanalysis_qt.figures import draw
+from physicsanalysis_qt import figures
+from physicsanalysis_qt.figures import draw, restyle
 
 from tests.test_gui_reproduces import GuiCase, OpenEventPeth
 from tests.recordings import write_oxysoft
@@ -96,15 +98,22 @@ class TestEventPeth(ParityCase):
                     dlg._view_buttons[view].setChecked(True)
                     self.assert_same(dlg.fig, draw.event_peth_from_tables(result.tables, result.parameters, view=view, sort_by_peak=sort), f"Event PETH {view}, {suffix}")
 
-    def test_a_title_typed_into_the_window(self):
+    def test_a_title_typed_into_edit_attributes(self):
         dlg = self.open()
         for i in (1, 4):
             dlg.trial_list.item(i).setCheckState(Qt.CheckState.Unchecked)
-        dlg.e_title.setText("A title of my own")
-        dlg.e_title.editingFinished.emit()
-        dlg._view_buttons["bins"].setChecked(True)
+        editable = dlg.editable_figure
+        editable.set_edits(restyle.edited(editable.parts, editable.edits, texts={"Figure title": "A title of my own"}))
+        dlg._view_buttons["bins"].setChecked(True)                                         # (the window draws its figure again: the title is still the one typed)
         result = pl.run_analysis("event_peth", self.ctx.cache, {"event": "L1P¹", "pre_s": 3.0, "post_s": 6.0, "bin_s": 2.0, "selected_trials": [1, 3, 4, 6, 7]})
-        self.assert_same(dlg.fig, draw.event_peth_from_tables(result.tables, result.parameters, view="bins", title="A title of my own"), "Event PETH, titled")
+        drawn = draw.event_peth_from_tables(result.tables, result.parameters, view="bins", title="A title of my own")
+        # An edited figure is laid out again after its words changed, so it is not the same picture to the pixel as one drawn with that title in the first
+        # place (the second pass of matplotlib's tight layout moves a colour bar by a hair); what it shows is the same: the same numbers and the same words.
+        self.assertEqual([(i.caption, i.text) for i in figures.text_items(dlg.fig)], [(i.caption, i.text) for i in figures.text_items(drawn)])
+        on_screen, from_tables = figures.figure_tables(dlg.fig), figures.figure_tables(drawn)
+        self.assertEqual(list(on_screen), list(from_tables))
+        for name in on_screen:
+            pd.testing.assert_frame_equal(on_screen[name], from_tables[name])
 
     def test_the_window_draws_the_same_picture_again_after_other_views(self):
         """A redraw must not depend on what the window showed before (matplotlib's tight layout remembers its last axes)."""

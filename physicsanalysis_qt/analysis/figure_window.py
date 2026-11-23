@@ -1,8 +1,8 @@
 """
 analysis/figure_window.py
 -------------------------
-The window for a figure drawn from a finished analysis's tables (Open Results…): the figure, where its numbers are, Export Plot (the Export Figure
-dialog, the file landing beside the numbers it was drawn from) and Close.
+The window for a figure drawn from a finished analysis's tables (Open Results…): the figure (which Edit Attributes can edit), where its numbers are,
+Export Plot (the Export Figure dialog, the file landing beside the numbers it was drawn from) and Close.
 """
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayo
 
 from ..app.toasts import show_error
 from ..app.window_fit import fit_to_screen
-from ..export.figure_export import export_figure
+from ..edit.figure_attributes import EditableFigure
+from ..export.figure_export import EDIT_POINTS_NOTE, export_figure
 from .group.results_dialog import open_folder
 
 
@@ -29,6 +30,8 @@ class ResultsFigureDialog(QDialog):
         head.setStyleSheet("color: gray;")
         layout.addWidget(head)
         self.canvas = FigureCanvasQTAgg(fig)
+        self.editable_figure = EditableFigure(ctx, self, fig, self.canvas)       # Edit Attributes edits this figure (edit/figure_attributes.py)
+        self.editable_figure.drawn()
         layout.addWidget(self.canvas, stretch=1)
 
         row = QHBoxLayout()
@@ -47,7 +50,7 @@ class ResultsFigureDialog(QDialog):
 
     def _export(self):
         # dest_dir always wins (see context.export_file): the picture lands beside the numbers it was drawn from
-        export_figure(self.ctx, self.fig, "Results", parent=self, dest_dir=self.directory)
+        export_figure(self.ctx, self.fig, "Results", parent=self, dest_dir=self.directory, no_points_note=EDIT_POINTS_NOTE)
 
     def _open(self):
         try:

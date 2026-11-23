@@ -14,6 +14,7 @@ import PyATCLI as pl
 from PyATCLI import outputs as _outputs
 from PyATCLI import viewplan as _viewplan
 from PyATCLI.analysis import group as _group
+from PyATCLI.analysis.group import figure_stats as _figure_stats
 from PyATCLI.analysis.group import rebuild as _rebuild
 from PyATCLI.analysis.group import report as _report
 
@@ -25,6 +26,17 @@ class _Saved:
 
     def default_marker(self):
         return dict(pl.saved_state.DEFAULT_MARKER)
+
+    def new_marker(self, time, label=None, color=None, fontsize=None):
+        return pl.saved_state.new_marker(time, label, color, fontsize)
+
+    def new_highlight(self, start, end, color="Yellow"):
+        return pl.saved_state.new_highlight(start, end, color)
+
+    def new_text_annotation(self, x, y, text, fontsize=None):
+        if fontsize is None:
+            return pl.saved_state.new_text_annotation(x, y, text)
+        return pl.saved_state.new_text_annotation(x, y, text, fontsize)
 
 
 class _Recording:
@@ -48,6 +60,12 @@ class _Recording:
 
     def plan_signal_renames(self, cache, renames):
         return pl.recording.plan_signal_renames(cache, renames)
+
+    def trim_range(self, x, first, last):
+        return pl.trim_range(x, first, last)
+
+    def describe_duration(self, seconds):
+        return pl.describe_duration(seconds)
 
 
 class _Markers:
@@ -79,6 +97,8 @@ class _Group:
     correction_labels = _group.CORRECTION_LABELS
 
     def new_settings(self, **fields):
+        if fields.get("pipeline"):
+            return _group.GroupSpec.from_pipeline(fields.pop("pipeline"), **fields)
         return _group.GroupSpec(**fields)
 
     def default_subject_names(self, folders, base_path):
@@ -98,6 +118,18 @@ class _Group:
 
     def measure_units(self, measure, signal):
         return _report.measure_units(measure, signal)
+
+    def pooled_subject_values(self, means, measure, groups):
+        return _figure_stats.pooled_subject_values(means, measure, groups)
+
+    def summary_stats(self, values):
+        return _figure_stats.summary_stats(values)
+
+    def normal_qq(self, values):
+        return _figure_stats.normal_qq(values)
+
+    def significance_stars(self, p):
+        return _figure_stats.significance_stars(p)
 
 
 class _View:
@@ -127,6 +159,9 @@ class _Stats:
     def peri_event_matrix(self, time_axis, trial_matrix, post, bin_width=1.0):
         return pl.compute_peri_event_matrix(time_axis, trial_matrix, post, bin_width)
 
+    def bin_ranges(self, edges):
+        return pl.bin_ranges(edges)
+
     def find_fft_peaks(self, freqs, power, n_peaks=3):
         return pl.find_fft_peaks(freqs, power, n_peaks=n_peaks)
 
@@ -150,6 +185,18 @@ class _Outputs:
         return _outputs.unique_path(path)
 
 
+class _Pipeline:
+    def describe(self):
+        return pl.describe_pipeline()
+
+    def problem(self, values):
+        try:
+            pl.PipelineOptions(dict(values))
+        except ValueError as e:
+            return str(e)
+        return None
+
+
 class PyATCLIBackend:
     """backend/ports.Backend, answered by PyATCLI."""
 
@@ -162,6 +209,7 @@ class PyATCLIBackend:
         self.view = _View()
         self.stats = _Stats()
         self.outputs = _Outputs()
+        self.pipeline = _Pipeline()
 
     def software_versions(self, app):
         return pl.software_versions(dict(app))

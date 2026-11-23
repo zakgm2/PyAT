@@ -12,6 +12,7 @@ The rules, each a small function:
     legend_edits         {a line's own legend name: (what it is called, shown)} — an entry renamed or hidden; its line is still drawn
     rename_legend_entry  the double-click rename of one entry
     set_line_color       a colour per line, filed under the line's legend name; the colour it is drawn in by default is no override
+    set_point_size       the size of the dot on every sample of every line; the size lines are drawn with by default is no override
     migrate_names        a colour and a legend edit follow their signal to its new name (names can swap)
 
 Naming a signal is the recording's rule, not the plot's — a name must say something and two signals cannot share one (api.recording.
@@ -22,6 +23,7 @@ nothing changed if a rename is refused.
 from dataclasses import dataclass, field
 
 from ..backend import api
+from .view import MAX_POINT_SIZE
 
 MIN_FONT_SIZE = 6
 TEXT_KEYS = ("title", "xlabel", "ylabel")
@@ -98,6 +100,19 @@ def set_line_color(attrs, key, color, default=None):
     return before != colors.get(key)
 
 
+def set_point_size(attrs, size, default=0.0):
+    """The size, in points, of the dot drawn on every sample of every line (0: none; at most MAX_POINT_SIZE). None, or the size the lines
+    are drawn with by default (`default`: 0 for a recording's signals, 4 for a table's columns), is no override: the lines go back to
+    following their default. Returns True if the setting changed."""
+    if size is not None:
+        size = min(max(float(size), 0.0), float(MAX_POINT_SIZE))
+        if size == float(default):
+            size = None
+    before = attrs.get("point_size")
+    attrs["point_size"] = size
+    return before != size
+
+
 def migrate_names(attrs, old_to_new):
     """What a plot remembers per line name — its colour override and its legend edit — follows the line to its new name. Done as
     one mapping, so two signals can swap names."""
@@ -120,14 +135,15 @@ def migrate_names(attrs, old_to_new):
 @dataclass
 class EditResult:
     """What an edit did: the signals renamed ({key: new name}), the legend entries that were signals' names ({old name: new name}),
-    whether a line's colour changed."""
+    whether a line's colour changed, whether the size of the points changed."""
     changes: dict = field(default_factory=dict)
     renamed: dict = field(default_factory=dict)
     colors_changed: bool = False
+    points_changed: bool = False
 
 
 def apply_edits(attrs, *, auto, own_names, signals=None, rename, texts=None, sizes=None, leg_fs=None, leg_loc=None, bold=None,
-                entries=None, colors=None):
+                entries=None, colors=None, point_size=None, point_default=0.0):
     """Edit Graph Attributes' Apply: the fields the dialog holds, in, and `attrs` changed in place.
 
     auto        {"title", "xlabel", "ylabel"}: the plot's automatic text
@@ -140,6 +156,7 @@ def apply_edits(attrs, *, auto, own_names, signals=None, rename, texts=None, siz
     leg_loc, bold   the legend's place, bold
     entries     [(own name, text typed, shown)] — the legend rows
     colors      [(own name, colour or None, default colour)] — the line colour rows; None is "the default"
+    point_size  the dot on every sample, in points (None: leave it as it is); `point_default` the size the lines are drawn with by default
 
     A rename the recording refuses (ValueError) is raised before anything else is changed. Returns an EditResult."""
     texts, sizes = texts or {}, sizes or {}
@@ -172,7 +189,8 @@ def apply_edits(attrs, *, auto, own_names, signals=None, rename, texts=None, siz
     changed = False
     for orig, color, default in colors or []:
         changed |= set_line_color(attrs, renamed.get(orig, orig), color, default)
-    return EditResult(changes, renamed, changed)
+    points = set_point_size(attrs, point_size, point_default) if point_size is not None else False
+    return EditResult(changes, renamed, changed, points)
 
 
 def rename_signals(cache, attrs, renames):

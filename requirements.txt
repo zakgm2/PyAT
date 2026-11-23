@@ -1,2 +1,3 @@
-# The dependencies are listed once, in pyproject.toml; this installs them with the app itself, in place (edits to the code take effect).
--e .
+# The dependencies are listed once, in pyproject.toml; this installs them, and every optional reader (TDT, Excel), with the app itself, in place
+# (edits to the code take effect). `pip install .` alone is the smaller install: the app then says "not installed" for a file that needs a missing package.
+-e .[all]

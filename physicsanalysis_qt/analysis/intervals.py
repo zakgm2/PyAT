@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 from ..app import errorlog
 from ..context import export_file
 from ..app.toasts import show_error
+from ..ui.workspace import present
 from .windows import request_analysis
 from ..app.window_fit import fit_to_screen
 
@@ -124,6 +125,6 @@ def launch_intervals(ctx):
     def _show(result):
         rows = interval_rows(result.tables["intervals"])
         errorlog.action("analysis", tool="Event Intervals", n_markers=len(rows))
-        IntervalsDialog(ctx, rows, markers=markers).exec()
+        present(ctx, IntervalsDialog(ctx, rows, markers=markers), "Intervals")
 
     request_analysis(ctx, "event_intervals", {}, _show)

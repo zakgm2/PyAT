@@ -25,6 +25,7 @@ class FakeGroupSettings:
     correction: str = "holm"
     alpha: float = 0.05
     regression_method: str = "ols"
+    pipeline: dict = field(default_factory=dict)
 
     def problems(self):
         return ["Name the group."] if not self.group_name else []
@@ -44,10 +45,32 @@ class _Saved:
     def default_marker(self):
         return {"label": "fake", "color": "#000000"}
 
+    def new_marker(self, time, label=None, color=None, fontsize=None):
+        return {"time": float(time), "label": label or "fake", "color": color or "#000000", "fontsize": fontsize or 8}
+
+    def new_highlight(self, start, end, color="Yellow"):
+        if start == end:
+            raise ValueError("a highlight runs between two different times")
+        lo, hi = sorted((float(start), float(end)))
+        return {"start": lo, "end": hi, "color": color}
+
+    def new_text_annotation(self, x, y, text, fontsize=None):
+        if not str(text).strip():
+            raise ValueError("a text box has to say something")
+        return {"x": float(x), "y": float(y), "text": str(text).strip(), "fontsize": fontsize or 11}
+
 
 class _Recording:
     splice_cut_out = "fake_cut"
     splice_keep_inside = "fake_keep"
+
+    def trim_range(self, x, first, last):
+        if first < 0 or last < 0 or (first == 0 and last == 0) or first + last >= float(x[-1]) - float(x[0]):
+            raise ValueError("fake: nothing to trim")
+        return float(x[0]) + first, float(x[-1]) - last
+
+    def describe_duration(self, seconds):
+        return f"{seconds:.4g} s" if abs(seconds) < 120 else f"{seconds / 60:.4g} min"
 
     def normalized_signal(self, cache):
         return "normalized", "Fake signal", cache.get("y")
@@ -105,6 +128,8 @@ class _Group:
     correction_labels = {"holm": "Fake Holm"}
 
     def new_settings(self, **fields):
+        if fields.get("pipeline", {}).get("smoothing.window_s") is not None:
+            fields.setdefault("smooth_seconds", fields["pipeline"]["smoothing.window_s"])
         return FakeGroupSettings(**fields)
 
     def default_subject_names(self, folders, base_path):
@@ -123,6 +148,21 @@ class _Group:
         if "mean_traces" not in tables and "subject_means" not in tables:
             return None
         return {"tables": tables, "parameters": parameters}
+
+    def pooled_subject_values(self, means, measure, groups):
+        return {label: {} for label in groups}
+
+    def summary_stats(self, values):
+        values = [float(v) for v in values]
+        n = len(values)
+        mean = sum(values) / n if n else None
+        return {"n": n, "mean": mean, "sem": None, "q1": min(values) if n else None, "median": mean, "q3": max(values) if n else None}
+
+    def normal_qq(self, values):
+        return {"theoretical": [0.0] * len(values), "ordered": [float(v) for v in values], "slope": 1.0, "intercept": 0.0}
+
+    def significance_stars(self, p):
+        return "" if p != p else ("*" if p < 0.05 else "ns")
 
     def measure_units(self, measure, signal):
         return "units"
@@ -187,6 +227,13 @@ class _Stats:
     def peri_event_matrix(self, time_axis, trial_matrix, post, bin_width=1.0):
         return []
 
+    def bin_ranges(self, edges):
+        for decimals in range(1, 7):
+            names = [f"{b['bin_start']:.{decimals}f}-{b['bin_end']:.{decimals}f}" for b in edges]
+            if len(set(names)) == len(names) and all(abs(round(v, decimals) - v) < 1e-9 for b in edges for v in (b["bin_start"], b["bin_end"])):
+                break
+        return names
+
     def find_fft_peaks(self, freqs, power, n_peaks=3):
         return []
 
@@ -215,6 +262,24 @@ class _Outputs:
         return candidate
 
 
+class _Pipeline:
+    def describe(self):
+        cutoff = {"name": "denoise.cutoff_hz", "key": "cutoff_hz", "kind": "float", "default": 5.0, "label": "Cutoff", "doc": "The filter's cutoff.",
+                  "choices": [], "minimum": 0.001, "maximum": None, "unit": "Hz"}
+        window = {"name": "smoothing.window_s", "key": "window_s", "kind": "float", "default": 0.5, "label": "Smoothing window", "doc": "The window.",
+                  "choices": [], "minimum": 0.0, "maximum": 60.0, "unit": "s"}
+        return {"steps": [{"name": "denoise", "title": "Low-pass filter", "sources": ["TDT"], "options": [cutoff]},
+                          {"name": "smoothing", "title": "Smoothing", "sources": None, "options": [window]}],
+                "defaults": {"denoise.cutoff_hz": 5.0, "smoothing.window_s": 0.5}}
+
+    def problem(self, values):
+        known = self.describe()["defaults"]
+        unknown = sorted(set(values) - set(known))
+        if unknown:
+            return f"unknown pipeline option {', '.join(unknown)}"
+        return "the cutoff must be above 0" if values.get("denoise.cutoff_hz", 5.0) <= 0 else None
+
+
 class FakeBackend:
     def __init__(self):
         self.saved = _Saved()
@@ -225,6 +290,7 @@ class FakeBackend:
         self.view = _View()
         self.stats = _Stats()
         self.outputs = _Outputs()
+        self.pipeline = _Pipeline()
 
     def software_versions(self, app):
         return {"python": "fake", "implementation": "fake", "bits": 64, "platform": "fake", "frozen": False, "library": "fake",

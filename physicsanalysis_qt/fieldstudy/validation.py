@@ -28,20 +28,6 @@ from ..app.toasts import show_error
 from ..app.window_fit import fit_to_screen
 
 
-def _verdict(p_fdr, ci_lower):
-    """Plain-language read of the numbers, for a quick glance before
-    digging into the actual columns. Not a substitute for looking at
-    p_value_fdr/cohens_d/ci_lower/ci_upper yourself — just a starting point."""
-    import math
-    if math.isnan(p_fdr):
-        return "Not enough data yet"
-    if p_fdr < 0.05 and ci_lower > 0:
-        return "Likely a real effect"
-    if p_fdr < 0.10:
-        return "Weak/borderline — worth more subjects"
-    return "No evidence of an effect"
-
-
 class ValidationSummaryDialog(QDialog):
     """One row per field pair — see PyATCLI.build_validation_summary's
     docstring for what each column means (also the source for a
@@ -63,15 +49,14 @@ class ValidationSummaryDialog(QDialog):
             "every column means."
         ))
 
-        columns = ["verdict"] + list(summary_df.columns)
+        # The analysis code's own "verdict" column (PyATCLI.validation_verdict: the rule is its, not the window's) is shown first.
+        columns = [c for c in ("verdict",) if c in summary_df.columns] + [c for c in summary_df.columns if c != "verdict"]
         table = QTableWidget(len(summary_df), len(columns))
         table.setHorizontalHeaderLabels(columns)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         for r in range(len(summary_df)):
             row = summary_df.iloc[r]
-            verdict = _verdict(row["p_value_fdr"], row["ci_lower"])
-            table.setItem(r, 0, QTableWidgetItem(verdict))
-            for c, col in enumerate(summary_df.columns, start=1):
+            for c, col in enumerate(columns):
                 value = row[col]
                 text = f"{value:.4f}" if isinstance(value, float) else str(value)
                 table.setItem(r, c, QTableWidgetItem(text))

@@ -23,12 +23,29 @@ specific to matplotlib's Agg renderer, which has no equivalent built-in.
 
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt
+from pyqtgraph.graphicsItems.LegendItem import ItemSample
 
 from .. import figures
 from ..context import get_active_signal, trace_color
 from .fonts import scaled_plot_font_sizes
 from .pg_interaction import on_pg_legend_double_clicked, on_pg_mouse_moved, on_pg_mouse_clicked
 from ..export.view_figure import view_traces
+
+# The legend looks as matplotlib's does on this (always white) plot: black words in a framed, nearly opaque white box, where it was asked to be.
+# (pyqtgraph's own is words in a pale grey with nothing behind them, which could not be read over the lines.)
+LEGEND_TEXT = "#000000"
+LEGEND_FILL = (255, 255, 255, 204)           # matplotlib's legend frame is 80% opaque
+LEGEND_EDGE = "#b0b0b0"
+LEGEND_SAMPLE_PX = 2.5                       # how thick the line shown beside a name is, at least (matplotlib's legend lines are 1.5 points): pyqtgraph's are as thin as the trace
+LEGEND_PAD_PX = 10                           # between the legend and the edge of the plot, as matplotlib's borderaxespad is
+# matplotlib's names for where a legend goes -> (the corner of the legend, the corner of the plot it is fixed to), each as a fraction of the width and height
+LEGEND_PLACES = {
+    "upper left": ((0, 0), (0, 0)), "upper right": ((1, 0), (1, 0)), "lower left": ((0, 1), (0, 1)), "lower right": ((1, 1), (1, 1)),
+    "upper center": ((0.5, 0), (0.5, 0)), "lower center": ((0.5, 1), (0.5, 1)), "center left": ((0, 0.5), (0, 0.5)),
+    "center right": ((1, 0.5), (1, 0.5)), "center": ((0.5, 0.5), (0.5, 0.5)), "best": ((0, 0), (0, 0)),
+}
+PX_PER_POINT = 96 / 72                      # a trace's dot is in points (matplotlib's markersize); PyQtGraph's symbols are in pixels
+DOT_LIMIT = 6000                            # dots drawn on one line at a time (a wider view is thinned, keeping each stretch's lowest and highest)
 
 
 class _PanZoomViewBox(pg.ViewBox):
@@ -123,6 +140,8 @@ def build_pg_widget(ctx):
     ctx.pg_plot_item = plot_item
     ctx.pg_viewbox = vb
     ctx.pg_lines = []
+    ctx.pg_dots = []
+    vb.sigXRangeChanged.connect(lambda *_: update_pg_dots(ctx))
     ctx.pg_hover_scatter = pg.ScatterPlotItem(size=8, brush='k', pen=None)
     ctx.pg_hover_scatter.setZValue(10)
     plot_item.addItem(ctx.pg_hover_scatter)
@@ -131,6 +150,18 @@ def build_pg_widget(ctx):
     widget.scene().sigMouseMoved.connect(lambda pos: on_pg_mouse_moved(ctx, pos))
     widget.scene().sigMouseClicked.connect(lambda ev: on_pg_mouse_clicked(ctx, ev))
     return widget
+
+
+def update_pg_dots(ctx):
+    """The dots of the lines that have them (the point size of Edit Graph Attributes, a table's columns), for the samples in view only: a dot
+    on each of millions of samples would make every pan and zoom crawl, and a view wider than DOT_LIMIT samples is thinned the way the
+    matplotlib engine thins its lines (the lowest and highest of each stretch stay), so every peak keeps its dot."""
+    if not ctx.pg_dots or ctx.pg_plot_item is None:
+        return
+    lo, hi = ctx.pg_plot_item.vb.viewRange()[0]
+    for scatter, x, y in ctx.pg_dots:
+        dx, dy = figures.view.min_max_decimate(x, y, (lo, hi), max_points=DOT_LIMIT)
+        scatter.setData(x=dx, y=dy)
 
 
 def _title_row_height(title_fs):
@@ -154,6 +185,19 @@ class _Legend(pg.LegendItem):
         super().mouseDoubleClickEvent(ev)
 
 
+class _Sample(ItemSample):
+    """The sample of a line beside its name in the legend, drawn thick enough for its colour to be told (pyqtgraph draws it as thin as the trace itself)."""
+
+    def paint(self, p, *args):
+        super().paint(p, *args)
+        pen = self.item.opts.get("pen") if isinstance(self.item, pg.PlotDataItem) and self.item.isVisible() else None
+        if pen is not None:
+            pen = pg.mkPen(pen)
+            pen.setWidthF(max(pen.widthF(), LEGEND_SAMPLE_PX))
+            p.setPen(pen)
+            p.drawLine(0, 11, 20, 11)
+
+
 def _set_legend_font_size(legend, leg_fs):
     """LegendItem.setLabelTextSize() only stores the new size in opts —
     it never re-renders the already-displayed label text (a pyqtgraph
@@ -166,6 +210,14 @@ def _set_legend_font_size(legend, leg_fs):
     legend.opts['labelTextSize'] = size
     for _, label in legend.items:
         label.setText(label.text, size=size)
+
+
+def _place_legend(legend, place):
+    """Fixes the legend where Edit Attributes' Position says (matplotlib's names, LEGEND_PLACES; one it does not know is the upper left)."""
+    if legend is None or legend.parentItem() is None:
+        return
+    item_corner, plot_corner = LEGEND_PLACES.get(place, LEGEND_PLACES["upper left"])
+    legend.anchor(item_corner, plot_corner, offset=tuple(0 if c == 0.5 else LEGEND_PAD_PX if c == 0 else -LEGEND_PAD_PX for c in plot_corner))
 
 
 def sync_pg_margins(ctx, reprobe=True):
@@ -277,11 +329,13 @@ def _pg_simple_plot_impl(ctx, cache, plot_item, zoom_key, is_new_dataset, prev_r
 
     plot_item.clear()
     ctx.pg_lines = []
+    ctx.pg_dots = []
     plot_item.addItem(ctx.pg_hover_scatter)
     ctx.pg_hover_scatter.hide()
 
     if plot_item.legend is None:                      # (addLegend() would make pyqtgraph's own, which cannot hear a double-click)
-        plot_item.legend = _Legend(offset=(30, 30), on_double_click=lambda scene_pos: on_pg_legend_double_clicked(ctx, scene_pos))
+        plot_item.legend = _Legend(offset=(30, 30), on_double_click=lambda scene_pos: on_pg_legend_double_clicked(ctx, scene_pos),
+                                   pen=LEGEND_EDGE, brush=LEGEND_FILL, labelTextColor=LEGEND_TEXT, sampleType=_Sample)
         plot_item.legend.setParentItem(plot_item.vb)
     legend = plot_item.addLegend()
     plot_attrs = ctx.plot_attrs
@@ -311,6 +365,11 @@ def _pg_simple_plot_impl(ctx, cache, plot_item, zoom_key, is_new_dataset, prev_r
         # extra optimization, not worth the crash.
         plot_item.addItem(item)
         ctx.pg_lines.append((item, x, y))
+        if t.marker and t.markersize > 0:          # a dot on every sample: a table's columns, or the point size of Edit Graph Attributes
+            dots = pg.ScatterPlotItem(size=max(1.0, t.markersize * PX_PER_POINT), pen=None, brush=pg.mkBrush(pen_color), pxMode=True)
+            dots.setZValue(5)                       # over the lines, under the hover marker
+            plot_item.addItem(dots)
+            ctx.pg_dots.append((dots, x, y))
         # Legend entries are resolved here (not via PlotDataItem's own
         # `name=`) so the show/hide + rename map from Edit Attributes can
         # be applied without needing to touch the line's underlying data —
@@ -400,6 +459,7 @@ def _pg_simple_plot_impl(ctx, cache, plot_item, zoom_key, is_new_dataset, prev_r
     plot_item.setLabel('left', ylabel_text,
                         **{'font-size': f'{ylabel_fs}pt', 'font-weight': weight, 'color': '#000'})
     _set_legend_font_size(legend, leg_fs)
+    _place_legend(legend, plot_attrs["leg_loc"])
 
     plot_item.showGrid(x=ctx.show_grid, y=ctx.show_grid, alpha=0.3)
     if is_new_dataset:
@@ -417,6 +477,7 @@ def _pg_simple_plot_impl(ctx, cache, plot_item, zoom_key, is_new_dataset, prev_r
     else:
         (xr, yr) = prev_range
         plot_item.vb.setRange(xRange=xr, yRange=yr, padding=0)
+    update_pg_dots(ctx)                                  # (the range may not have changed, so nothing else would draw them)
     sync_pg_margins(ctx)
 
 
@@ -470,7 +531,7 @@ def pg_update_active_signal(ctx):
     """
     cache = ctx.cache
     plot_item = ctx.pg_plot_item
-    if cache is None or plot_item is None or len(ctx.pg_lines) != 1:
+    if cache is None or plot_item is None or len(ctx.pg_lines) != 1 or ctx.pg_dots:       # (dots belong to the line it would retarget)
         return False
 
     item, _, _ = ctx.pg_lines[0]

@@ -19,9 +19,11 @@ for an edited copy makes them all "just work" on it with no changes to
 any of them. The full original recording is kept in ctx.original_cache
 and can be restored at any time.
 
-Flow: pick a mode first (small dialog, no time fields), then click two
-points directly on the plot — same click-to-anchor pattern as Curve
-Fit. No typed start/end numbers anywhere in this path.
+Flow: pick a mode first (small dialog), then click two points directly on
+the plot — same click-to-anchor pattern as Curve Fit. The third choice,
+"Trim the start and the end", needs no clicks: it asks for how much to take
+off each end (seconds or minutes) and is a "keep only" splice from the new first
+sample to the new last, so it stacks, is saved and undone like the others.
 
 Splices stack: each new one applies on top of whatever's currently
 shown rather than always restarting from the pristine original, so
@@ -46,8 +48,8 @@ x-coordinates off the plot, never a specific signal's data.
 """
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QRadioButton, QButtonGroup, QListWidget,
+    QComboBox, QDialog, QDoubleSpinBox, QGridLayout, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QRadioButton, QButtonGroup, QListWidget, QWidget,
 )
 
 from ..backend import api
@@ -62,6 +64,8 @@ from ..app.window_fit import fit_to_screen
 MODE_KEEP_INSIDE = api.recording.splice_keep_inside
 MODE_CUT_OUT = api.recording.splice_cut_out
 
+SECONDS_PER_UNIT = {"seconds": 1.0, "minutes": 60.0}               # the units the trim amounts can be typed in
+
 
 class _SpliceModePickerDialog(QDialog):
     """Just the mode choice — no time fields. Closing this (Start
@@ -72,13 +76,14 @@ class _SpliceModePickerDialog(QDialog):
         super().__init__(parent)
         self.ctx = ctx
         self.mode = None
+        self.trim = None                          # (seconds off the start, seconds off the end) when the third choice was made
         self.setWindowTitle("Splice Recording")
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(
             "Works on a copy — the original recording is kept untouched and\n"
-            "restorable at any time. Choose what to do, then click two points\n"
-            "on the graph to mark the range."
+            "restorable at any time. Choose what to do; the first two then ask you\n"
+            "to click two points on the graph to mark the range."
         ))
 
         # Cut Out listed first and checked by default — removing an
@@ -86,24 +91,89 @@ class _SpliceModePickerDialog(QDialog):
         self.rb_cut = QRadioButton("Cut out this range (remove an artifact, stitch the rest together)")
         self.rb_cut.setChecked(True)
         self.rb_keep = QRadioButton("Keep only this range")
+        self.rb_trim = QRadioButton("Trim the start and the end (type how much, no clicking)")
         mode_group = QButtonGroup(self)
         mode_group.addButton(self.rb_cut)
         mode_group.addButton(self.rb_keep)
+        mode_group.addButton(self.rb_trim)
         layout.addWidget(self.rb_cut)
         layout.addWidget(self.rb_keep)
+        layout.addWidget(self.rb_trim)
+
+        self.trim_box = QWidget()
+        grid = QGridLayout(self.trim_box)
+        grid.setContentsMargins(24, 0, 0, 0)
+        self.sp_first, self.sp_last = self._amount_box(), self._amount_box()
+        self.unit = QComboBox()
+        self.unit.addItems(list(SECONDS_PER_UNIT))
+        grid.addWidget(QLabel("Remove the first"), 0, 0)
+        grid.addWidget(self.sp_first, 0, 1)
+        grid.addWidget(QLabel("Remove the last"), 1, 0)
+        grid.addWidget(self.sp_last, 1, 1)
+        grid.addWidget(QLabel("in"), 2, 0)
+        grid.addWidget(self.unit, 2, 1)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        grid.addWidget(self.summary, 3, 0, 1, 2)
+        self.generic_note = QLabel(f"The table's x column ({(ctx.cache or {}).get('x_label', 'x')}) is read as seconds.")
+        self.generic_note.setWordWrap(True)
+        self.generic_note.setHidden((ctx.cache or {}).get('source') != 'Generic')
+        grid.addWidget(self.generic_note, 4, 0, 1, 2)
+        layout.addWidget(self.trim_box)
 
         btn_row = QHBoxLayout()
-        btn_ok = QPushButton("Start Clicking…")
-        btn_ok.setDefault(True)
-        btn_ok.clicked.connect(self._accept)
+        self.btn_ok = QPushButton("Start Clicking…")
+        self.btn_ok.setDefault(True)
+        self.btn_ok.clicked.connect(self._accept)
         btn_cancel = QPushButton("Cancel")
         btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(self.btn_ok)
         btn_row.addWidget(btn_cancel)
         layout.addLayout(btn_row)
 
+        self.rb_trim.toggled.connect(self._refresh)
+        self.unit.currentIndexChanged.connect(self._refresh)
+        self.sp_first.valueChanged.connect(self._refresh)
+        self.sp_last.valueChanged.connect(self._refresh)
+        self._refresh()
+
+    @staticmethod
+    def _amount_box():
+        box = QDoubleSpinBox()
+        box.setRange(0.0, 1_000_000.0)
+        box.setDecimals(2)
+        box.setSingleStep(1.0)
+        return box
+
+    def _amounts(self):
+        """(first, last) as typed, in seconds."""
+        scale = SECONDS_PER_UNIT[self.unit.currentText()]
+        return self.sp_first.value() * scale, self.sp_last.value() * scale
+
+    def _refresh(self, *_):
+        """The amounts are only for the third choice; with it chosen, the button trims (when what is typed leaves something) instead of starting the clicking."""
+        trimming = self.rb_trim.isChecked()
+        self.trim_box.setEnabled(trimming)
+        self.btn_ok.setText("Trim" if trimming else "Start Clicking…")
+        if not trimming:
+            self.summary.setText("")
+            self.btn_ok.setEnabled(True)
+            return
+        x = self.ctx.cache['x']
+        try:
+            start, end = api.recording.trim_range(x, *self._amounts())
+        except ValueError as e:
+            self.summary.setText(str(e))
+            self.btn_ok.setEnabled(False)
+        else:
+            self.summary.setText(f"{api.recording.describe_duration(end - start)} of the {api.recording.describe_duration(float(x[-1]) - float(x[0]))} shown will remain.")
+            self.btn_ok.setEnabled(True)
+
     def _accept(self):
-        self.mode = MODE_CUT_OUT if self.rb_cut.isChecked() else MODE_KEEP_INSIDE
+        if self.rb_trim.isChecked():
+            self.mode, self.trim = MODE_KEEP_INSIDE, self._amounts()
+        else:
+            self.mode = MODE_CUT_OUT if self.rb_cut.isChecked() else MODE_KEEP_INSIDE
         self.accept()
 
 
@@ -123,8 +193,12 @@ def start_splice_flow(ctx):
     if dlg.exec() != QDialog.DialogCode.Accepted:
         return False
 
-    ctx._pending_splice_mode = dlg.mode
     ctx.slope_clicks.clear()
+    if dlg.trim is not None:                      # needs no clicks; a flow still waiting for them is over
+        ctx.splice_click_mode = False
+        trim_ends(ctx, *dlg.trim)
+        return True
+    ctx._pending_splice_mode = dlg.mode
     ctx.splice_click_mode = True
     show_window_toast(ctx, "Click two points on the graph to mark the range")
     return True
@@ -160,7 +234,29 @@ CHANGED_MEANWHILE = ("The recording changed while the splice was being computed,
                      "try it again.")
 
 
-def apply_splice(ctx, mode, start, end, announce=True, on_done=None):
+def trim_ends(ctx, first_s, last_s, on_done=None):
+    """Takes `first_s` seconds off the start of the recording shown and `last_s` off its end: "keep only" the range from the new first
+    sample to the new last (measured on the time axis as it is now, so it stacks on earlier splices like a clicked one). It is saved, listed
+    in Manage Splices and undone like any splice, and a script gets the same recording from the same two numbers
+    (`pl.apply_splice(cache, pl.MODE_KEEP_INSIDE, start, end)`). Returns the engine request, or None if nothing was started (a message says why)."""
+    if ctx.cache is None or ctx.cache.get('source') not in ('TDT', 'Oxysoft', 'Generic'):
+        show_error(ctx, "Splicing isn't available for this data type.")
+        if on_done is not None:
+            on_done(False)
+        return None
+    try:
+        start, end = api.recording.trim_range(ctx.cache['x'], first_s, last_s)
+    except ValueError as e:
+        show_error(ctx, str(e))
+        if on_done is not None:
+            on_done(False)
+        return None
+    parts = [f"the {name} {api.recording.describe_duration(amount)}" for name, amount in (("first", first_s), ("last", last_s)) if amount]
+    errorlog.action("trim_ends", first_s=first_s, last_s=last_s)
+    return apply_splice(ctx, MODE_KEEP_INSIDE, start, end, on_done=on_done, label="Trimmed " + " and ".join(parts))
+
+
+def apply_splice(ctx, mode, start, end, announce=True, on_done=None, label=None):
     """Applies one splice on top of whatever's currently shown — splices
     stack rather than each one restarting from the pristine original, so
     removing a second artifact doesn't undo the first. Records the
@@ -172,7 +268,8 @@ def apply_splice(ctx, mode, start, end, announce=True, on_done=None):
     returns. `on_done(True or False)` is called when it has — False if the
     range left too little, the engine failed, or the recording was changed
     meanwhile (a marker placed while the dF/F was re-fitting, say: the
-    result would have lost it, so it is not applied)."""
+    result would have lost it, so it is not applied). `label` replaces the
+    toast's own wording of what was done ("Trimmed the first 44 s")."""
     from ..plot.plotting import simple_plot
 
     def done(ok):
@@ -207,7 +304,9 @@ def apply_splice(ctx, mode, start, end, announce=True, on_done=None):
         simple_plot(ctx)
         if announce:
             n_samples = len(cache['x'])
-            if mode == MODE_CUT_OUT:
+            if label is not None:
+                verb = f"{label}, {n_samples} samples remain"
+            elif mode == MODE_CUT_OUT:
                 verb = f"Cut out {start:.1f}s–{end:.1f}s, {n_samples} samples remain"
             else:
                 verb = f"Spliced to {start:.1f}s–{end:.1f}s ({n_samples} samples)"

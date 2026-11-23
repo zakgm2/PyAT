@@ -22,7 +22,7 @@ from physicsanalysis_qt.edit import splice
 from physicsanalysis_qt.analysis import windows
 from physicsanalysis_qt.loading import pt2, tdt
 from physicsanalysis_qt.fieldstudy import open_study as text_field_study
-from physicsanalysis_qt.ui import edit_toolbar
+from physicsanalysis_qt.ui import edit_toolbar, workspace
 
 from tests.recordings import make_tdt_folder, write_study
 from tests.test_loaders_engine import LoaderCase
@@ -39,6 +39,11 @@ class WindowCase(LoaderCase):
         self.assertIsNotNone(self.ctx.cache)
         self.dialogs = []
         patcher = mock.patch.object(QDialog, "exec", lambda dlg: self.dialogs.append(dlg) or 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        opened_as_a_tab = workspace.Workspace.add_page                                       # the analysis windows open as tabs of the main window:
+        capture = lambda ws, dialog, *a, **k: self.dialogs.append(dialog) or opened_as_a_tab(ws, dialog, *a, **k)    # noted here, and really opened
+        patcher = mock.patch.object(workspace.Workspace, "add_page", capture)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.ctx.window_pre, self.ctx.window_post = 3.0, 4.0

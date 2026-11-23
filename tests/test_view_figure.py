@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import pandas as pd
 from numpy.testing import assert_array_equal
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QLabel
 
 import PyATCLI as pl
 from PyATCLI import viewplan
@@ -271,6 +271,42 @@ class TestTheDataCsv(ShowsRecording):
         view = view_figure.build_view(self.ctx)
         view.plan.traces.append(viewplan.Trace("dup", view.x, view.x * 2, view.traces[0].csv_name, y_full=view.x * 2))       # (the library's planned line)
         self.assertEqual(list(view.data_table().columns), ["time_s", BUILT["normalized"], f"{BUILT['normalized']} (2)"])
+
+
+class TestPointsInTheExport(ShowsRecording):
+    """A view of a recording has no points until Edit Attributes gives its lines some; the Export Figure dialog says so."""
+
+    def dialog(self):
+        seen = []
+
+        def look(dialog):
+            seen.append(dialog)
+            return QDialog.DialogCode.Rejected
+
+        with mock.patch.object(QDialog, "exec", new=look):
+            view_figure.export_view(self.ctx)
+        return seen[0]
+
+    def test_without_points_the_dialog_says_where_to_get_them(self):
+        dlg = self.dialog()
+        self.assertFalse(dlg.has_points)
+        self.assertIn("Edit Attributes", dlg.no_points_note)
+        self.assertTrue(any(label.text() == dlg.no_points_note for label in dlg.findChildren(QLabel)))
+        self.assertFalse(dlg.point_slider.isEnabled())
+
+    def test_with_the_point_size_set_the_export_has_points_to_resize_and_the_figure_has_them(self):
+        self.ctx.plot_attrs["point_size"] = 5.0
+        simple_plot(self.ctx)
+        line = self.ctx._decim_lines[0][0]
+        self.assertEqual((line.get_marker(), line.get_markersize()), ("o", 5.0))
+        dlg = self.dialog()
+        self.assertTrue(dlg.has_points)
+        self.assertTrue(dlg.point_slider.isEnabled())
+        dlg.point_spin.setValue(200)
+        self.assertEqual(dlg.custom_point_scale(), 2.0)                                           # the export's own scaling comes on top of it
+        view = view_figure.build_view(self.ctx)
+        (drawn,) = [l for l in view.fig.axes[0].lines if l.get_label() == BUILT["normalized"]]
+        self.assertEqual((drawn.get_marker(), drawn.get_markersize()), ("o", 5.0))
 
 
 class TestExportView(ShowsRecording):

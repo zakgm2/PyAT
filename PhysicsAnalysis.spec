@@ -80,7 +80,10 @@ a = Analysis(
     # View fail in the shipped exe with "No module named 'matplotlib.backends.backend_pdf'" (PNG and TIFF go through
     # backend_agg, which backend_qtagg already pulls in). tests/test_packaging.py keeps this list in step with the
     # formats figures/render.py writes.
-    hiddenimports=['matplotlib.backends.backend_pdf', 'matplotlib.backends.backend_svg'],
+    # The readers PyATCLI loads by name (PyATCLI/_optional.py: the optional packages of its file-type extras) are invisible to that scan too, so they are named
+    # here, or the shipped exe cannot open TDT tanks or Excel workbooks. The build runs the exe's `info` and fails if one is missing
+    # (packaging/check_frozen_readers.py); tests/test_packaging.py keeps this list in step with PyATCLI's extras.
+    hiddenimports=['matplotlib.backends.backend_pdf', 'matplotlib.backends.backend_svg', 'tdt', 'openpyxl', 'sklearn.linear_model'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

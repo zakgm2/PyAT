@@ -100,14 +100,17 @@ def apply_highlight_at_point(ctx, x):
     t1, t2 = ctx.slope_clicks
     ctx.slope_clicks.clear()
     ctx.highlight_click_mode = False
-    start, end = sorted((t1, t2))
+    try:
+        highlight = api.saved.new_highlight(t1, t2, ctx._pending_highlight_color)         # (the two times in order, and the colour checked)
+    except ValueError as exc:
+        show_error(ctx, str(exc))
+        return
 
     before = undo.snapshot(ctx)
-    ctx.cache.setdefault('highlights', []).append(
-        {"start": start, "end": end, "color": ctx._pending_highlight_color})
+    ctx.cache.setdefault('highlights', []).append(highlight)
     undo.push(ctx, "added a highlight", before)
     simple_plot(ctx)
-    show_window_toast(ctx, f"Highlighted {start:.1f}s–{end:.1f}s")
+    show_window_toast(ctx, f"Highlighted {highlight['start']:.1f}s–{highlight['end']:.1f}s")
 
 
 def delete_highlight(ctx, highlight):

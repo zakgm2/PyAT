@@ -84,6 +84,18 @@ class TestTraces(unittest.TestCase):
         self.assertEqual((title, x_label, y_label), ("Sheet1", "Time (s)", "Value"))
         self.assertEqual([t.color for t in traces], ["#CC0000", "#0033CC"])
 
+    def test_a_point_size_puts_a_dot_on_every_sample_of_every_line_and_zero_takes_the_dots_away(self):
+        (t,) = V.view_traces(make_cache())[0]
+        self.assertEqual((t.marker, t.markersize, t.default_markersize), (None, 0.0, 0.0))                    # a recording's signal is a plain line
+        (t,) = V.view_traces(make_cache(), point_size=5)[0]
+        self.assertEqual((t.marker, t.markersize, t.default_markersize), ("o", 5.0, 0.0))
+        traces = V.view_traces(generic_cache())[0]
+        self.assertEqual([(t.marker, t.markersize, t.default_markersize) for t in traces], [("o", 4, 4)] * 2)     # a table's columns have a dot per sample
+        traces = V.view_traces(generic_cache(), point_size=0)[0]
+        self.assertEqual([(t.marker, t.markersize, t.default_markersize) for t in traces], [(None, 0.0, 4)] * 2)
+        traces = V.view_traces(oxysoft_cache(), point_size=2.5)[0]
+        self.assertTrue(all((t.marker, t.markersize) == ("o", 2.5) for t in traces))                          # every line, the faint channels too
+
 
 class TestAttributes(unittest.TestCase):
     def test_the_defaults_are_the_apps(self):
@@ -102,6 +114,14 @@ class TestAttributes(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, message):
                 V.plot_attrs(**bad)
 
+    def test_the_point_size_is_none_or_a_size_in_points(self):
+        self.assertIsNone(V.default_plot_attrs()["point_size"])
+        for good in (None, 0, 4, 2.5, V.MAX_POINT_SIZE):
+            self.assertEqual(V.plot_attrs(point_size=good)["point_size"], good)
+        for bad in (-1, V.MAX_POINT_SIZE + 1, "big", True, [3]):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "point_size is a size in points from 0 to 30"):
+                V.plot_attrs(point_size=bad)
+
 
 class TestTheFigure(unittest.TestCase):
     def setUp(self):
@@ -116,6 +136,15 @@ class TestTheFigure(unittest.TestCase):
         self.assertEqual((ax.get_title(), ax.get_xlabel(), ax.get_ylabel()), (f"{NORMALIZED} — Rec", "Time (s)", "Amplitude"))
         self.assertEqual(ax.title.get_fontweight(), "bold")
         self.assertEqual((ax.title.get_fontsize(), ax.xaxis.label.get_fontsize()), (24, 16))
+
+    def test_the_point_size_draws_a_dot_on_every_sample_and_none_leaves_the_lines_as_they_are(self):
+        (line,) = [l for l in self.ax().lines if l.get_label() == NORMALIZED]
+        self.assertIn(line.get_marker(), (None, "None"))
+        (line,) = [l for l in self.ax(attrs=dict(point_size=6)).lines if l.get_label() == NORMALIZED]
+        self.assertEqual((line.get_marker(), line.get_markersize()), ("o", 6.0))
+        view = V.build_view(self.cache, attrs=dict(point_size=6))
+        self.assertEqual(view.parameters()["attributes"]["point_size"], 6)                                       # the record says how it was drawn
+        self.assertTrue(all(t.marker == "o" for t in V.plan_view(self.cache, attrs=dict(point_size=6)).traces))
 
     def test_a_title_and_labels_of_your_own_and_their_sizes(self):
         ax = self.ax(attrs=dict(title="My title", xlabel="Elapsed (s)", ylabel="ΔF/F", title_fs=20, xlabel_fs=14, ylabel_fs=15, bold=False))
@@ -216,6 +245,36 @@ class TestTheFigure(unittest.TestCase):
         self.assertEqual((dy.max(), dy.min()), (7.0, -7.0))
         dx, dy = V.min_max_decimate(x, y, (100, 200), max_points=5000)                             # little enough: the visible stretch, a sample beyond each edge
         self.assertEqual((dx[0], dx[-1]), (99.0, 201.0))
+
+    def test_the_decimation_covers_the_whole_view_not_only_the_first_bins(self):
+        """With more samples than max_points but fewer than twice as many, whole bins at the end were left out: a view of ~1,200-2,400 samples lost up to half of
+        its right-hand side (the line stopped short of the edge when zoomed in)."""
+        for n in (1201, 1500, 1799, 1999, 2001, 2399, 2999, 3777):
+            with self.subTest(n=n):
+                x = np.arange(float(n))
+                y = np.sin(x / 7.0)
+                dx, dy = V.min_max_decimate(x, y, (0, n - 1), max_points=1200)
+                self.assertLessEqual(len(dx), 1200)
+                self.assertGreaterEqual(dx[-1], n - 1 - 2 * -(-n // 600))                          # the last samples are in (within a bin or two of the end)
+                self.assertLessEqual(dx[0], 2 * -(-n // 600))
+                self.assertTrue(np.all(np.diff(dx) >= 0))                                          # (in order, so the line goes left to right)
+
+    def test_the_decimation_keeps_the_extremes_of_the_last_bin_too(self):
+        n = 2999
+        x = np.arange(float(n))
+        y = np.zeros(n)
+        y[n - 1] = 9.0                                                                             # the very last sample is the peak
+        y[n - 7] = -9.0
+        dx, dy = V.min_max_decimate(x, y, (0, n - 1), max_points=1200)
+        self.assertEqual((dy.max(), dy.min()), (9.0, -9.0))
+        self.assertEqual(dx[dy.argmax()], n - 1.0)
+        self.assertEqual(dx[dy.argmin()], n - 7.0)
+
+    def test_the_decimation_never_makes_up_samples(self):
+        x = np.arange(2999.0)
+        y = np.random.default_rng(3).normal(size=2999)
+        dx, dy = V.min_max_decimate(x, y, (0, 2998), max_points=1200)
+        np.testing.assert_array_equal(y[dx.astype(int)], dy)                                       # every (x, y) it gives is a sample of the trace
 
     def test_the_figure_can_be_made_by_any_factory(self):
         made = []

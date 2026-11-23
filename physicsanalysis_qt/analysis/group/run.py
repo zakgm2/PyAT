@@ -24,6 +24,7 @@ from ...backend.tables import read_tables
 from ...app import errorlog
 from ...app.background import run_engine
 from ...app.toasts import show_error, show_window_toast
+from ...ui.workspace import present
 
 
 def results_from_tables(frames, spec, notes, software, files):
@@ -72,7 +73,7 @@ def start_group_run(ctx, spec, group_dir, scans=()):
         show_window_toast(ctx, f"Group analysis finished: results saved in {group_dir}"
                                + (f" ({n_notes} warning{'s' if n_notes != 1 else ''}, see the report)" if n_notes else ""),
                           duration=6000)
-        dialog.exec()
+        present(ctx, dialog, "Group results", recording=False)
 
     def _on_error(msg):
         show_error(ctx, f"The group analysis could not be completed:\n{msg}\n\nYour settings are saved in "

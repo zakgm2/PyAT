@@ -16,7 +16,8 @@ The data CSV beside the figure is not read off the drawn lines (they are thinned
 every sample of the visible range, one column per trace, and a second CSV lists the markers in view.
 
 `attrs` is what Edit Graph Attributes edits: a dict with the keys of `default_plot_attrs()` — a title, x and y label (None = the automatic text),
-their font sizes, the legend's size, place and per-entry edits (renamed or hidden), bold, and `line_colors` ({the line's legend name: "#rrggbb"}).
+their font sizes, the legend's size, place and per-entry edits (renamed or hidden), bold, `line_colors` ({the line's legend name: "#rrggbb"}) and
+`point_size` (None: the lines as they are drawn; a number of points: a dot of that size on every sample of every line, 0 for none).
 """
 
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ GENERIC_COLORS = ['#CC0000', '#0033CC', '#228B22', '#CC6600', '#6600CC', '#00888
 LEGEND_LOCATIONS = ["upper left", "upper right", "lower left", "lower right", "upper center", "lower center",
                     "center left", "center right", "center", "best"]
 DEFAULT_FIGURE_SIZE = (10.0, 5.5)
+MAX_POINT_SIZE = 30                   # the largest dot (points) Edit Graph Attributes can ask for
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +54,7 @@ def default_plot_attrs():
         "leg_entries": None,        # [(the entry's own name, what to call it, shown)] or None for every entry as it is
         "bold":        True,
         "line_colors": {},          # {the line's legend name: "#rrggbb"} — user overrides of a line's colour
+        "point_size":  None,        # None: lines as drawn (a table's columns have a dot per sample); else a dot of this many points on every sample, 0: none
     }
 
 
@@ -75,6 +78,9 @@ def normalize_attrs(changes, check_colours=False):
         v = attrs[key]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0:
             raise ValueError(f"{key} is a font size in points, not {v!r}")
+    size = attrs["point_size"]
+    if size is not None and (isinstance(size, bool) or not isinstance(size, (int, float)) or not 0 <= size <= MAX_POINT_SIZE):
+        raise ValueError(f"point_size is a size in points from 0 to {MAX_POINT_SIZE} (None: as drawn), not {size!r}")
     if check_colours and attrs["line_colors"]:
         from matplotlib.colors import is_color_like
 
@@ -120,11 +126,14 @@ def min_max_decimate(x, y, xlim, max_points=2000):
     if n <= max_points:
         return seg_x, seg_y
 
-    bins = max(1, max_points // 2)
-    bin_size = n // bins
-    trim = bins * bin_size
-    xb = seg_x[:trim].reshape(bins, bin_size)
-    yb = seg_y[:trim].reshape(bins, bin_size)
+    bin_size = -(-n // max(1, max_points // 2))          # (rounded up: every sample is in a bin. Rounded down, the last n % bins samples were dropped —
+    bins = -(-n // bin_size)                             # up to half the view, its right-hand end, when there were between one and two times max_points)
+    pad = bins * bin_size - n
+    if pad:                                              # the last bin is filled up with its own last sample, which changes neither its extremes nor where they are
+        seg_x = np.concatenate([seg_x, np.full(pad, seg_x[-1])])
+        seg_y = np.concatenate([seg_y, np.full(pad, seg_y[-1])])
+    xb = seg_x.reshape(bins, bin_size)
+    yb = seg_y.reshape(bins, bin_size)
 
     idx_min = yb.argmin(axis=1)
     idx_max = yb.argmax(axis=1)
@@ -171,6 +180,7 @@ class Trace:
     key: str = None
     default_color: str = None
     snap: bool = True
+    default_markersize: float = 0.0    # what `markersize` is without the point size of Edit Graph Attributes
 
 
 # role of a line (the library's) -> (default colour, line width, alpha, does the hover marker follow it)
@@ -184,9 +194,10 @@ _ROLE_STYLES = {
 }
 
 
-def style_traces(planned, line_colors=None):
+def style_traces(planned, line_colors=None, point_size=None):
     """The library's planned lines as the Traces the plot engines draw: a default colour, width and alpha by what the line is, and the
-    person's colour for its legend name on top (`line_colors`, {legend name: colour})."""
+    person's colour for its legend name on top (`line_colors`, {legend name: colour}). `point_size` (None: as drawn) is the size in points of
+    the dot every line gets on each of its samples, 0 for none."""
     overrides = line_colors or {}
     out, columns = [], 0
     for p in planned:
@@ -199,21 +210,25 @@ def style_traces(planned, line_colors=None):
             default, lw, alpha, snap = p.color or signal_color(p.signal), 1.5, 0.8, True
         else:
             default, lw, alpha, snap = _ROLE_STYLES[p.role]
+        default_markersize = markersize
+        if point_size is not None:
+            marker, markersize = ('o', float(point_size)) if point_size > 0 else (None, 0.0)
         out.append(Trace(p.label, p.x, p.y, overrides.get(p.key) or default, lw, alpha, p.csv_name, y_full=p.y_full, marker=marker,
-                         markersize=markersize, key=p.key, default_color=default, snap=snap))
+                         markersize=markersize, key=p.key, default_color=default, snap=snap, default_markersize=default_markersize))
     return out
 
 
-def view_traces(cache, *, signals=None, active=None, line_colors=None):
+def view_traces(cache, *, signals=None, active=None, line_colors=None, point_size=None):
     """(traces, title, x label, y label) for what the main plot draws for a recording, before any edit of its title, labels or legend.
 
     signals       a TDT recording's signals ticked in the Plot menu (keys of cache["signals"]: "normalized", "main_driver",
                   "isosbestic", ...); more than one are overlaid, in the recording's order. Default: "normalized".
     active        the signal shown when only one is — default: the one ticked (or the first the recording has)
     line_colors   {legend name: colour} overrides, as in the attributes
+    point_size    the dot on every sample, in points (None: as drawn), as in the attributes
     """
     planned, title, x_label, y_label = api.view.view_traces(cache, signals=signals, active=active)
-    return style_traces(planned, line_colors), title, x_label, y_label
+    return style_traces(planned, line_colors, point_size), title, x_label, y_label
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +350,7 @@ def plan_view(cache, *, attrs=None, signals=None, active=None, xlim=None, ylim=N
     attrs = {**default_plot_attrs(), **(attrs or {})}
     plan = api.view.plan_view(cache, signals=signals, active=active, xlim=xlim, ylim=ylim, show_grid=show_grid, store_labels=store_labels,
                               attributes=record_attrs(attrs))
-    return ViewExport(None, plan, style_traces(plan.traces, attrs["line_colors"]), attrs)
+    return ViewExport(None, plan, style_traces(plan.traces, attrs["line_colors"], attrs["point_size"]), attrs)
 
 
 def build_view(cache, *, attrs=None, signals=None, active=None, xlim=None, ylim=None, show_grid=True, store_labels=None,

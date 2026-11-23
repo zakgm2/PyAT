@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import QApplication, QPushButton
 
 from ..app import errorlog
 from ..context import export_file
-from ..export.figure_export import export_figure
+from ..export.figure_export import EDIT_POINTS_NOTE, export_figure
 from ..app.toasts import show_error, show_window_toast
 from .analysis_picker import disarm_analysis
 from .window_settings import get_window  # noqa: F401 — re-exported: existing callers import get_window from here
@@ -24,7 +24,7 @@ from .window_settings import get_window  # noqa: F401 — re-exported: existing 
 def export_figure_to_file(ctx, fig_obj, default_prefix, tracking_info="", provenance=None):
     """An analysis window's Export Plot: the Export Figure dialog (format, resolution, editable titles and
     labels, a data CSV beside the figure — see export/figure_export.py), then the figure."""
-    export_figure(ctx, fig_obj, default_prefix, tracking_info, provenance=provenance)
+    export_figure(ctx, fig_obj, default_prefix, tracking_info, provenance=provenance, no_points_note=EDIT_POINTS_NOTE)
 
 
 def add_stats_export_buttons(ctx, parent, btn_row_layout, *, get_clipboard_text,

@@ -33,6 +33,7 @@ OPERATIONS_USED = (
     "files.inspect",
     "group.run",
     "group.scan",
+    "methods.text",
     "provenance.write",
     "pt2.load",
     "recording.close",
@@ -63,8 +64,15 @@ TABLES_READ = {
         "curve": ["Channel", "time_s", "value", "fit"],
         "context": ["Channel", "time_s", "value"],
     },
+    "event_compare": {
+        "traces": ["Event", "time_from_event_s", "mean", "sem", "n"],
+        "summary": ["Event", "Occurrences", "Trials", "Peak Amplitude", "Time-to-Peak (s)", "Total AUC", "Positive AUC", "Negative AUC"],
+    },
     "event_intervals": {
         "intervals": ["time_s", "store", "label", "phase", "dt_since_prev_same_store_s", "dt_since_prev_any_s"],
+    },
+    "recording_overview": {
+        "overview": ["time_s"],
     },
 }
 
@@ -78,7 +86,7 @@ OUTPUTS_READ = {
 
 
 RESULTS_READ = {
-    "recording.open": ["id", "path", "cache", "directory", "original_cache", "splices", "signal_labels", "restored", "warnings", "regression_method"],
+    "recording.open": ["id", "path", "cache", "directory", "original_cache", "splices", "signal_labels", "restored", "warnings", "regression_method", "pipeline"],
     "recording.view": ["cache", "directory", "splices"],
     "recording.splice": ["cache", "directory", "splices"],
     "files.inspect": ["valid", "recordings"],
@@ -90,6 +98,7 @@ RESULTS_READ = {
     "run": ["tables", "summary", "notes"],
     "group.run": ["table_data", "spec", "note_records", "software", "files"],
     "group.scan": ["scans"],
+    "methods.text": ["text", "options"],
     "fieldstudy.fields": ["fields"],
     "fieldstudy.run": ["tables"],
     "fieldstudy.validate": ["tables"],

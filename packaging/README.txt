@@ -30,7 +30,18 @@ KEY FEATURES
     original file.
   - Analysis tools: Curve Fit, FFT, Z-Score PETH, Event PETH
     (GuPPy-style stacked heatmap across every occurrence of an event),
-    Find Significant Peaks, and Measure Intervals.
+    Compare Events (the average Z-score of several events overlaid),
+    Recording Overview (the Z-score of the whole recording with its
+    traces behind it), Find Significant Peaks, and Measure Intervals.
+    Each opens as a tab along the bottom of the main window, which can
+    be popped out into a window of its own and docked back; Edit
+    Attributes edits the figure of whichever one is in front.
+  - Pipeline options: Options -> Pipeline options... chooses how every
+    recording is processed (the motion-correction method, the dF/F
+    baseline, the low-pass filter, the smoothing, the z-score baseline).
+    They apply to everything you open, a group analysis included, and
+    "Copy pipeline" at the bottom of the window writes down what the
+    recording on screen was processed with as a methods paragraph.
   - Text field study analysis: compare free-text survey responses
     across subjects using sentence embeddings, with a permutation-test
     significance check. (Requires the optional sentence-transformers
@@ -41,7 +52,10 @@ KEY FEATURES
     an artifact, the analysis runs) shows a live percentage in the
     bottom-right corner while it works. It runs in a second process
     (PyAT starts itself again as its analysis engine), so the window
-    stays responsive; press Esc to cancel it.
+    stays responsive; its Cancel button (or Esc) stops it, and if it
+    does not stop at once the engine is ended and the recording is
+    reconnected to a fresh one.
+  - Drop a file or folder anywhere on the window to open it.
   - Group Analysis (Hypothesis Testing): pick a folder with two or more
     TDT recordings, choose the recordings, markers, window and measures in
     a short wizard, and get a mixed-effects model per measure with a report
@@ -72,5 +86,9 @@ LICENSE
 PyAT is free software, released under the GNU Affero General Public
 License v3.0 (AGPL-3.0). The full license text is in LICENSE.txt, next
 to this file; the complete source code is in the repository below.
+The open-source packages inside the app (numpy, scipy, Qt, and the rest), with their
+licences and where to get their source, are listed in THIRD_PARTY_NOTICES.txt, also next
+to this file. The analysis library inside the app, PyATCLI, is AGPL-3.0 too:
+https://github.com/zakgm2/PyATCLI
 
 Full changelog and source: https://github.com/zakgm2/PyAT

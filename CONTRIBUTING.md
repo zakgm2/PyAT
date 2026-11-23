@@ -16,7 +16,7 @@ Thank you for looking. PyAT is a small project with one maintainer, so here is w
    (On Windows PowerShell: `$env:QT_QPA_PLATFORM="offscreen"` first.) They take a few minutes; the app's tests also run on every pull request against the library at its minimum, newest and development versions.
 3. A fix should come with a test that fails without it; a new feature should come with tests of what it does.
 4. Match the surrounding code: names, comment density, and how errors are reported to the user.
-5. Computation belongs in the library, [PyATCLI](https://github.com/zakgm2/PyATCLI); this repository is the window, the plots and the figures. The app only reaches the library through `physicsanalysis_qt/backend/` (a test enforces it).
+5. Computation belongs in the library, [PyATCLI](https://github.com/zakgm2/PyATCLI); this repository is the window, the plots and the figures. The app only reaches the library through `physicsanalysis_qt/backend/` (a test enforces it), and works out no statistics of its own (`tests/test_no_calculation_in_the_app.py`: a number that goes into a table, a file or a figure's data is the library's; a statistic that only sets how a picture is drawn goes in that test's `ALLOWED` list, with why). The library, for its part, imports no plotting or window toolkit.
 6. Add a line under `## Unreleased` in `CHANGELOG.md`.
 
 ## Licence

@@ -34,6 +34,11 @@ def open_folder(ctx):
     path = QFileDialog.getExistingDirectory(ctx.win, "Open Data Folder", start_dir)
     if not path:
         return
+    open_folder_path(ctx, path)
+
+
+def open_folder_path(ctx, path):
+    """What Open TDT Folder does once a folder is picked, and what dropping a folder on the window does (loading/drop.py)."""
     ctx.last_dir = path
 
     # The engine looks at the folder (a walk of a whole cohort folder, on a network drive, can take seconds) and says what it is.
@@ -62,6 +67,39 @@ def _after_inspect(ctx, path, info):
     _prompt_multi_tdt(ctx, found, path)
 
 
+def open_folders_paths(ctx, folders):
+    """Several folders dropped on the window at once (loading/drop.py): the recordings in all of them, then what picking a parent folder that holds several
+    does: a question, Single Experiment Analysis (pick one) or Group Analysis (compare them). One recording found is simply opened."""
+    found, waiting = [], list(folders)
+
+    def _next(info=None):
+        if info is not None:
+            found.extend(r for r in info["recordings"] if r not in found)
+        if waiting:
+            path = waiting.pop(0)
+            run_engine(ctx, "files.inspect", {"path": path}, _next, lambda message: show_error(ctx, message), label="Looking for recordings")
+        else:
+            _after_inspect_many(ctx, found)
+
+    _next()
+
+
+def _after_inspect_many(ctx, found):
+    if not found:
+        show_error(ctx, "No TDT folders found in the dropped folders.")
+        return
+    if len(found) == 1:
+        _load_folder(ctx, found[0])
+        return
+    found = sorted(found, key=str.lower)
+    try:
+        base_path = os.path.commonpath(found)                  # what the recordings share: their parent folder, as when that folder is picked
+    except ValueError:                                         # on different drives there is no such folder
+        show_error(ctx, "The dropped folders are on different drives. Drop folders from one drive, or the folder that holds them.")
+        return
+    _prompt_multi_tdt(ctx, found, base_path, dropped=True)
+
+
 class _MultiTDTModeDialog(QDialog):
     """Shown when Open Data Folder finds more than one TDT block inside
     the picked directory — reports the count and asks how to proceed.
@@ -69,13 +107,17 @@ class _MultiTDTModeDialog(QDialog):
     over every recording found. Single Experiment Analysis is today's
     normal single-folder flow, just with a folder to pick from afterward."""
 
-    def __init__(self, parent, n_found):
+    def __init__(self, parent, n_found, dropped=False):
         super().__init__(parent)
         self.mode = None
         self.setWindowTitle("Multiple TDT Folders Found")
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(
+            f"Found {n_found} TDT recordings in the folders you dropped (searched every\n"
+            "subfolder, any depth) — anything else in there was ignored. How do\n"
+            "you want to proceed?"
+            if dropped else
             f"Found {n_found} TDT recordings under this directory (searched every\n"
             "subfolder, any depth) — anything else in there was ignored. How do\n"
             "you want to proceed?"
@@ -147,8 +189,8 @@ class _TDTFolderPickerDialog(QDialog):
         self.accept()
 
 
-def _prompt_multi_tdt(ctx, found, base_path):
-    mode_dlg = _MultiTDTModeDialog(ctx.win, len(found))
+def _prompt_multi_tdt(ctx, found, base_path, dropped=False):
+    mode_dlg = _MultiTDTModeDialog(ctx.win, len(found), dropped=dropped)
     if mode_dlg.exec() != QDialog.DialogCode.Accepted:
         return
 

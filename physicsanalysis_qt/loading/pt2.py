@@ -83,6 +83,11 @@ def launch_pt2_viewer(ctx):
     )
     if not path:
         return
+    open_pt2_path(ctx, path)
+
+
+def open_pt2_path(ctx, path):
+    """What Open PT2 does once a file is picked, and what dropping a .pt2 on the window does (loading/drop.py)."""
     ctx.last_dir = os.path.dirname(path)
     errorlog.register_recording(path)
     errorlog.action("pt2_opened")

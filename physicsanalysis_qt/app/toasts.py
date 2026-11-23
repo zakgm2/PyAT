@@ -5,6 +5,9 @@ Small on-screen notifications: a self-dismissing toast widget in the
 window's bottom-RIGHT corner, plus thin wrappers around QMessageBox for
 errors/success dialogs.
 
+Toasts are dark on the light theme and white (with dark text) on the dark one, where a dark toast would vanish into the window (toast_colors). Each has an edge
+that tells it from whatever it lies over: a dark one round the white toast (an analysis tab's figure is white on the dark theme too), a grey one round the dark toast.
+
 Only ONE toast is ever on screen — a new one replaces whatever is showing
 (and cancels its dismiss timer) instead of piling up on top of it.
 
@@ -35,6 +38,20 @@ _PUMP_INTERVAL_S = 0.04    # at most ~25 repaints a second while the GUI thread 
 _STALL_S = 1.2             # no change for this long: the step is one long call, so show it is still alive
 _STALL_TICK_MS = 400       # ...by cycling the dots after its description
 _LINGER_MS = 350           # a toast that reached 100% stays this long, so the bar is seen full before it goes
+
+
+# What a toast is made of. Dark on a light window, which stands out; on the dark theme's window (45, 45, 45) a #333 toast would vanish into it, so
+# there it is white with dark text. The edge is what tells a toast from what is under it when that is its own colour: a white toast over an analysis tab's
+# white figure gets a dark one, a dark toast over something dark a grey one.
+_ON_LIGHT = {"bg": "#333", "edge": "1px solid #8a8a8a", "text": "white", "detail": "#cfcfcf", "track": "#555", "chunk": "#FFD54F",
+             "button": "#555", "button_text": "white", "button_hover": "#777"}
+_ON_DARK = {"bg": "#ffffff", "edge": "2px solid #1f1f1f", "text": "#222222", "detail": "#555555", "track": "#d9d9d9", "chunk": "#F9A825",
+            "button": "#e3e3e3", "button_text": "#222222", "button_hover": "#cfcfcf"}
+
+
+def toast_colors(ctx):
+    """The colours toasts (and the pinned panel) are drawn in on the window's theme (Options → Theme)."""
+    return _ON_DARK if ctx.settings.get("theme", "light") == "dark" else _ON_LIGHT
 
 
 class _Repositioner(QObject):
@@ -97,12 +114,14 @@ def show_window_toast(ctx, message, duration=2500):
     toast.setObjectName("windowToast")
     # Purely informational, so clicks pass straight through to the plot.
     toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    colors = toast_colors(ctx)
     toast.setStyleSheet(
-        "background-color: #333; border-radius: 6px; padding: 8px;"
+        f"#windowToast, #windowToast QLabel {{ background-color: {colors['bg']}; border-radius: 6px; padding: 8px; }}"
+        f"#windowToast {{ border: {colors['edge']}; }}"
     )
     layout = QVBoxLayout(toast)
     label = QLabel(message)
-    label.setStyleSheet("color: white; font-weight: bold;")
+    label.setStyleSheet(f"color: {colors['text']}; font-weight: bold;")
     layout.addWidget(label)
 
     _ensure_repositioner(ctx)
@@ -125,10 +144,11 @@ def show_pinned_panel(ctx, message, button_text, on_click):
     hide_pinned_panel(ctx)
     panel = QWidget(ctx.win)
     panel.setObjectName("pinnedPanel")
-    panel.setStyleSheet("#pinnedPanel { background-color: #333; border-radius: 6px; padding: 8px; }")
+    colors = toast_colors(ctx)
+    panel.setStyleSheet(f"#pinnedPanel {{ background-color: {colors['bg']}; border-radius: 6px; padding: 8px; border: {colors['edge']}; }}")
     layout = QVBoxLayout(panel)
     label = QLabel(message)
-    label.setStyleSheet("color: white; font-weight: bold;")
+    label.setStyleSheet(f"color: {colors['text']}; font-weight: bold;")
     layout.addWidget(label)
     button = QPushButton(button_text)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -168,16 +188,21 @@ class ProgressToast(QObject):
       back on its next update once that toast has gone. finish() closes this toast
       only, never somebody else's (a "Cut out ..." result toast shown by the action
       itself, say).
+    - With `on_cancel` it has a Cancel button (and is no longer click-through). Pressing it calls on_cancel; the owner then calls stopping(), which
+      says so and turns the button into "Stop now" (the second press ends the work at once: see background.cancel_running).
     - update(fraction, message) is a slot: connect a worker thread's signal to
       it and Qt runs it on the GUI thread. With pump=True (the work is running ON
       the GUI thread) each update also lets Qt repaint, without handling clicks or
       keys, so the toast keeps moving while the window is busy.
     """
 
-    def __init__(self, ctx, label, pump=False, delay_ms=_PROGRESS_DELAY_MS):
+    def __init__(self, ctx, label, pump=False, delay_ms=_PROGRESS_DELAY_MS, on_cancel=None):
         super().__init__(ctx.win)
         self._ctx = ctx
         self._label = label
+        self._on_cancel = on_cancel
+        self._stopping = False
+        self._cancel_btn = None
         self._pump = pump
         self._delay_s = delay_ms / 1000.0
         self._t0 = time.monotonic()
@@ -291,13 +316,15 @@ class ProgressToast(QObject):
     def _build(self):
         toast = QWidget(self._ctx.win)
         toast.setObjectName("progressToast")
-        toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)   # informational: clicks pass through
+        if self._on_cancel is None:
+            toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)   # informational: clicks pass through
         toast.setFixedWidth(_PROGRESS_WIDTH)
+        colors = toast_colors(self._ctx)
         toast.setStyleSheet(
-            "#progressToast { background-color: #333; border-radius: 6px; }"
-            "#progressToast QLabel { background: transparent; color: white; }"
-            "#progressToast QProgressBar { background-color: #555; border: none; border-radius: 2px; }"
-            "#progressToast QProgressBar::chunk { background-color: #FFD54F; border-radius: 2px; }"
+            f"#progressToast {{ background-color: {colors['bg']}; border-radius: 6px; border: {colors['edge']}; }}"
+            f"#progressToast QLabel {{ background: transparent; color: {colors['text']}; }}"
+            f"#progressToast QProgressBar {{ background-color: {colors['track']}; border: none; border-radius: 2px; }}"
+            f"#progressToast QProgressBar::chunk {{ background-color: {colors['chunk']}; border-radius: 2px; }}"
         )
         layout = QVBoxLayout(toast)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -315,7 +342,7 @@ class ProgressToast(QObject):
 
         self._detail = QLabel("")
         self._detail.setWordWrap(True)
-        self._detail.setStyleSheet("color: #cfcfcf; font-size: 11px;")
+        self._detail.setStyleSheet(f"color: {colors['detail']}; font-size: 11px;")
         layout.addWidget(self._detail)
 
         self._bar = QProgressBar()
@@ -323,7 +350,32 @@ class ProgressToast(QObject):
         self._bar.setTextVisible(False)
         self._bar.setFixedHeight(5)
         layout.addWidget(self._bar)
+
+        self._cancel_btn = None
+        if self._on_cancel is not None:
+            row = QHBoxLayout()
+            row.addStretch(1)
+            self._cancel_btn = QPushButton("Cancel")
+            self._cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._cancel_btn.setToolTip("Stop this task (Esc does the same). If it does not stop, pressing again ends it at once.")
+            self._cancel_btn.setStyleSheet(
+                f"QPushButton {{ background-color: {colors['button']}; color: {colors['button_text']}; border: none; border-radius: 3px; "
+                f"padding: 3px 14px; font-size: 11px; }}"
+                f"QPushButton:hover {{ background-color: {colors['button_hover']}; }}")
+            self._cancel_btn.clicked.connect(self._cancel_clicked)
+            row.addWidget(self._cancel_btn)
+            layout.addLayout(row)
         return toast
+
+    def _cancel_clicked(self):
+        if self._on_cancel is not None:
+            self._on_cancel()
+
+    def stopping(self):
+        """A cancel was asked for: says so, and the button now ends the task at once."""
+        self._stopping = True
+        if self._widget is not None:
+            self._render()
 
     def _on_stall_tick(self):
         if self._done or self._widget is None:
@@ -342,8 +394,14 @@ class ProgressToast(QObject):
             tail = "." * (1 + (self._stall_ticks - 1) % 3)    # . .. ... . .. ...: still working, just no news
         else:
             tail = "…"
-        self._detail.setText(message + tail if message else "")
-        self._detail.setVisible(bool(message))
+        if self._stopping:
+            self._detail.setText("Stopping…  Stop now ends it at once")
+            self._detail.setVisible(True)
+        else:
+            self._detail.setText(message + tail if message else "")
+            self._detail.setVisible(bool(message))
+        if self._cancel_btn is not None:
+            self._cancel_btn.setText("Stop now" if self._stopping else "Cancel")
         self._bar.setValue(int(self._fraction * 1000))
         _place_toast(self._ctx)                               # the detail line can wrap, changing the height
 
@@ -356,6 +414,8 @@ class ProgressToast(QObject):
             "percent": self._percent.text() if shown else None,
             "detail": self._detail.text() if shown else None,
             "fraction": self._fraction,
+            "stopping": self._stopping,
+            "button": self._cancel_btn.text() if shown and self._cancel_btn is not None else None,
         }
 
 

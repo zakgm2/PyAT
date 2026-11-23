@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "PhysicsAnalysisGUI"
-version = "4.1.1"
+version = "4.2.0"
 description = "Desktop GUI for loading, visualising, and analysing physics lab data (TDT, Oxysoft, generic tabular, EFNMR/.pt2) and text field studies"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -20,8 +20,15 @@ dependencies = [
     "packaging",
     "PyQt6",
     "pyqtgraph",
-    "PyATCLI>=2026.11.2",
+    "PyATCLI>=2026.11.22",
 ]
+
+# PyATCLI's own extras: the readers that are not part of its core. The app runs without them, and a file that needs a missing one gets a message saying
+# which package to install. `pip install ".[all]"` (what requirements.txt and the release build use) has every one.
+[project.optional-dependencies]
+tdt = ["PyATCLI[tdt]>=2026.11.22"]                 # opening TDT tanks
+excel = ["PyATCLI[excel]>=2026.11.22"]             # opening Excel workbooks
+all = ["PyATCLI[tdt,excel]>=2026.11.22"]
 
 # Without this, setuptools' flat-layout auto-discovery refuses to guess
 # between physicsanalysis_qt/ and any other top-level directory (e.g.

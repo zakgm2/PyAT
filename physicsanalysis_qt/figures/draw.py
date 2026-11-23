@@ -1,7 +1,7 @@
 """
 figures/draw.py
 ---------------
-The figures of the analysis windows — Z-score, AUC, FFT, Curve Fit, Event PETH — drawn from plain arrays. PyAT's
+The figures of the analysis windows — Z-score, AUC, FFT, Curve Fit, Event PETH, Compare Events, Recording Overview — drawn from plain arrays. PyAT's
 windows call these to put the figure on screen and `plotlatest` calls them to draw a result; one piece of drawing code,
 so the figure a script saves is the figure the app shows.
 
@@ -21,9 +21,9 @@ matplotlib is imported when a figure is drawn, never when the library is importe
 import numpy as np
 
 from ..backend import api
-from .style import channel_color, fig_font_sizes
+from .style import channel_color, fig_font_sizes, signal_color
 from .tables import channels as table_channels
-from .tables import find, float_array, has
+from .tables import find, float_array, has, numeric
 
 
 def _figure(figsize, figure=None, **kw):
@@ -43,6 +43,16 @@ def _clear(fig):
 
     fig.clf()
     fig.subplotpars = SubplotParams()          # back to the defaults
+
+
+def _fit(fig, rect=None):
+    """fig.tight_layout(rect=rect), and the rectangle it fitted the figure into remembered on it (`fig.pyat_layout_rect`): when the words on a
+    figure are changed afterwards (restyle.py, Edit Graph Attributes) it is laid out again into the same rectangle."""
+    fig.pyat_layout_rect = rect
+    if rect is None:
+        fig.tight_layout()
+    else:
+        fig.tight_layout(rect=rect)
 
 
 def _window(parameters, channels, key):
@@ -89,7 +99,7 @@ def zscore_window_figure(channels, pre, post, figure=None):
     axes[-1].set_xlabel("Time from Center (s)", fontweight='bold', fontsize=lfs)
 
     fig.suptitle("Z-Score Analysis", fontsize=tfs, fontweight='bold')
-    fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+    _fit(fig, [0, 0.03, 1, 0.97])
     return fig
 
 
@@ -123,7 +133,7 @@ def auc_window_figure(channels, figure=None):
         ax.set_ylabel(r['channel'], fontweight='bold', fontsize=lfs)
     axes[-1].set_xlabel("Time from Center (s)", fontweight='bold', fontsize=lfs)
     fig.suptitle("AUC", fontsize=tfs, fontweight='bold')
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    _fit(fig, [0, 0, 1, 0.97])
     return fig
 
 
@@ -174,7 +184,7 @@ def fft_window_figure(channels, fs, center=None, pre=None, post=None, figure=Non
 
     if center is not None and pre is not None and post is not None:
         fig.suptitle(f"centre {center:.1f}s  |  -{pre:.0f}s/+{post:.0f}s", fontsize=10, color='gray')
-    fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+    _fit(fig, [0, 0.03, 1, 0.97])
     return fig
 
 
@@ -226,7 +236,7 @@ def draw_curve_fit(fig, channels, *, model_name, t1, t2, view_start, view_end, x
     ax.legend(fontsize=lgfs, loc='best')
     ax.set_title(f"Curve Fit — {model_name.split('(')[0].strip()}", fontweight='bold', fontsize=tfs)
     ax.grid(True, linestyle=':', alpha=0.5)
-    fig.tight_layout()
+    _fit(fig)
     ax.set_xlim(view_start, view_end)
     return ax
 
@@ -272,6 +282,7 @@ TRIAL_COLORS = [
     '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
 ]
 EVENT_PETH_VIEWS = ("zscore", "trials", "auc", "peak", "bins")
+MAX_BIN_LINES = 60                                       # the Bins view marks where each bin starts, unless there are more bins than this (a grey wash)
 
 
 def new_event_peth_figure(figure=None):
@@ -362,7 +373,7 @@ def draw_event_peth(fig, *, time_axis, trial_matrix, trial_numbers, pre, post, b
         elif view == "peak":
             ax_line.axvline(gp["latency"], color='gray', lw=1.0, linestyle=':', alpha=0.7)
             ax_line.scatter([gp["latency"]], [gp["peak_amplitude"]], color='red', zorder=5, s=35, label="Peak")
-        elif view == "bins":
+        elif view == "bins" and len(gp["mean_bins"]) <= MAX_BIN_LINES:
             for b in gp["mean_bins"]:
                 ax_line.axvline(b["bin_start"], color='gray', lw=0.5, alpha=0.3)
 
@@ -375,7 +386,7 @@ def draw_event_peth(fig, *, time_axis, trial_matrix, trial_numbers, pre, post, b
         ax_line.legend(fontsize=lfs * 0.8, loc='upper right')
 
     fig.suptitle(title or f"Event PETH — {event_name}", fontsize=tfs, fontweight='bold')
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    _fit(fig, [0, 0, 1, 0.96])
     return ax_heat, ax_line
 
 
@@ -394,3 +405,186 @@ def event_peth_from_tables(tables, parameters, figure=None, view="zscore", sort_
                     bin_s=float(parameters.get("bin_s", 1.0)), view=view, sort_by_peak=sort_by_peak,
                     signal_label=signal_label, title=title, event_name=str(parameters.get("event", "")))
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Compare Events: the average Z-score of several events on one set of axes
+# ---------------------------------------------------------------------------
+
+# Okabe & Ito's colour-blind-safe palette (the one the group figures use), in the order that reads best on white; an event's colour is its
+# place among the events drawn, so a figure drawn from the exported CSV has the colours the window had.
+COMPARE_COLORS = ["#0072B2", "#D55E00", "#009E73", "#E69F00", "#CC79A7", "#56B4E9", "#000000", "#F0E442"]
+
+
+def new_event_compare_figure(figure=None):
+    """An empty figure for draw_event_compare — the window keeps it and draws into it on every change."""
+    return _figure((9, 5.5), figure)
+
+
+def compare_title(events):
+    """"Compare Events — A vs B vs C", or the count when there are too many names to read."""
+    names = [e["event"] for e in events]
+    if not names:
+        return "Compare Events"
+    return "Compare Events — " + " vs ".join(names) if len(names) <= 3 else f"Compare Events ({len(names)} events)"
+
+
+def compare_events_from_tables(tables):
+    """[{"event", "t", "mean", "sem", "n"}] for each event of a Compare Events traces table, in the order they first appear; None if no table
+    of `tables` is one."""
+    traces = find(tables, "Event", "time_from_event_s", "mean", "sem")
+    if traces is None:
+        return None
+    events = []
+    for name, rows in traces.groupby("Event", sort=False):
+        n = rows["n"].iloc[0] if "n" in rows.columns else None
+        events.append({"event": str(name), "t": float_array(rows["time_from_event_s"]), "mean": float_array(rows["mean"]),
+                       "sem": float_array(rows["sem"]), "n": int(n) if n is not None and n == n else None})
+    return events
+
+
+def draw_event_compare(fig, *, events, pre, post, signal_label="Normalized", title=None, show_sem=True):
+    """Clears `fig` and draws each event's average Z-score as a line (its SEM as a band around it, if `show_sem`) on one set of axes, returning
+    the axes. `events` is [{"event", "t", "mean", "sem", "n"}] as compare_events_from_tables makes it; with none, the figure says so."""
+    _clear(fig)
+    ax = fig.subplots(1, 1)
+    ax.pyat_panel = "Mean Z-score"                                        # its name in the figure-data CSV
+    tfs, lfs, _ = fig_font_sizes(fig)
+    if not events:                                                        # nothing to draw yet: the words, on blank axes
+        ax.text(0.5, 0.5, "Tick the events to compare,\nthen press Compare", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        fig.suptitle(title or compare_title(events), fontsize=tfs, fontweight="bold")
+        _fit(fig, [0, 0, 1, 0.96])
+        return ax
+    for i, e in enumerate(events):
+        color = COMPARE_COLORS[i % len(COMPARE_COLORS)]
+        ax.plot(e["t"], e["mean"], color=color, linewidth=1.8, label=e["event"] + (f" (n={e['n']})" if e.get("n") else ""))
+        if show_sem:
+            ax.fill_between(e["t"], e["mean"] - e["sem"], e["mean"] + e["sem"], color=color, alpha=0.2)
+    ax.axvline(0, color="red", linestyle="--", alpha=0.7)
+    ax.axhline(0, color="gray", linewidth=0.8, alpha=0.5)
+    ax.set_xlim([-pre, post])
+    ax.set_xlabel("Time from Event (s)", fontweight="bold", fontsize=lfs)
+    ax.set_ylabel(f"Z-Score ({signal_label})", fontweight="bold", fontsize=lfs)
+    ax.legend(fontsize=lfs * 0.8, loc="upper right")
+    fig.suptitle(title or compare_title(events), fontsize=tfs, fontweight="bold")
+    _fit(fig, [0, 0, 1, 0.96])
+    return ax
+
+
+def event_compare_from_tables(tables, parameters, figure=None, show_sem=True, signal_label="Normalized", title=None):
+    events = compare_events_from_tables(tables)
+    if not events:
+        return None
+    pre, post = parameters.get("pre_s"), parameters.get("post_s")
+    fig = new_event_compare_figure(figure)
+    draw_event_compare(fig, events=events, pre=float(pre) if pre is not None else -min(float(e["t"].min()) for e in events),
+                       post=float(post) if post is not None else max(float(e["t"].max()) for e in events),
+                       signal_label=signal_label, title=title, show_sem=show_sem)
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Recording overview: the whole recording's traces one above another
+# ---------------------------------------------------------------------------
+
+OVERVIEW_STRETCHES = 2500        # a trace is drawn as the lowest and highest sample of this many stretches of the recording: more than a window has pixels
+
+
+OVERVIEW_PANEL_NAMES = ("Control", "Signal", "Control Fit", "Z-Score", "ΔF/F")        # what a TDT recording's overview is made of
+
+
+def overview_panels(table):
+    """[(panel name, values)] for a recording overview's table — every numeric column but time_s, in order — or None if `table` is not one: it needs
+    time_s and a Z-Score column (Z-Score (<channel>) for other recordings), or at least two of a TDT overview's panels (a choice of them, in any order)."""
+    if not has(table, "time_s"):
+        return None
+    names = [str(c) for c in numeric(table, exclude=("time_s",))]
+    scored = any(n == "Z-Score" or n.startswith("Z-Score (") for n in names)
+    if not scored and sum(n in OVERVIEW_PANEL_NAMES for n in names) < 2:
+        return None
+    return [(n, float_array(table[n])) for n in names]
+
+
+def overview_title(parameters):
+    """The heading: says how the Z-score was taken (and of which signal when it is not the dF/F)."""
+    method = (parameters or {}).get("method")
+    if not method:
+        return "Recording Overview"
+    signal = (parameters or {}).get("signal")
+    of = f" of {signal}" if signal not in (None, "normalized") else ""
+    return f"Recording Overview — Z-score{of} ({method})"
+
+
+def _thin(x, y, stretches=OVERVIEW_STRETCHES):
+    """(x, y) cut down to the lowest and the highest sample of each of `stretches` equal stretches (and the last sample), in time order, so a
+    peak or a dip of a long recording is still on the page. Short traces are returned as they are."""
+    n = len(y)
+    if n <= 4 * stretches:
+        return x, y
+    width = n // stretches
+    block = y[:width * stretches].reshape(stretches, width)
+    base = np.arange(stretches) * width
+    rows = np.unique(np.concatenate([base + block.argmin(axis=1), base + block.argmax(axis=1), [n - 1]]))
+    return x[rows], y[rows]
+
+
+def _overview_color(name):
+    """The colour a panel is drawn in: the app's own for the stream it comes from (control, signal, dF/F), a channel's for its Z-score."""
+    if name in ("Control", "Control Fit"):
+        return signal_color("isosbestic")
+    if name == "Signal":
+        return signal_color("main_driver")
+    if name in ("Z-Score", "ΔF/F"):
+        return signal_color("normalized")
+    if name.startswith("Z-Score (") and name.endswith(")"):
+        return channel_color(name[len("Z-Score ("):-1])
+    return channel_color(name)
+
+
+def new_recording_overview_figure(figure=None, panels=5):
+    """An empty figure for draw_recording_overview — the window keeps it and draws into it on every update; tall enough for `panels` panels."""
+    return _figure((10, max(4.0, 1.7 * panels + 0.9)), figure)
+
+
+def draw_recording_overview(fig, *, time, panels, title=None):
+    """Clears `fig` and draws each of `panels` ([(name, values)]) on its own axes, one above another, sharing the time axis, each with its name
+    as its heading (the bold text above its top-left corner) and its y label. The Control Fit panel shows the fit on the signal it is fitted to.
+    Long traces are drawn from the lowest and highest sample of each stretch (see _thin), so the picture is the same size however long the
+    recording is. Returns the axes."""
+    _clear(fig)
+    n = len(panels)
+    axes = list(np.atleast_1d(fig.subplots(max(n, 1), 1, sharex=True)))
+    tfs, lfs, legfs = fig_font_sizes(fig)
+    values = dict(panels)
+    for ax, (name, y) in zip(axes, panels):
+        ax.pyat_panel = name                                                 # its name in the figure-data CSV
+        if name == "Control Fit" and "Signal" in values:
+            ax.plot(*_thin(time, values["Signal"]), color=_overview_color("Signal"), linewidth=0.6, alpha=0.6, label="Signal")
+            ax.plot(*_thin(time, y), color=_overview_color(name), linewidth=0.8, label="Control fit")
+            ax.legend(loc="upper right", fontsize=legfs, frameon=False)
+        else:
+            ax.plot(*_thin(time, y), color=_overview_color(name), linewidth=0.6)
+        ax.set_title(name, loc="left", fontweight="bold", fontsize=lfs)
+        ax.set_ylabel(name, fontsize=lfs)
+        ax.margins(x=0)
+    if n:
+        axes[-1].set_xlabel("Time (s)", fontweight="bold", fontsize=lfs)
+        if len(time):
+            axes[-1].set_xlim(float(time[0]), float(time[-1]))
+    else:                                                                    # nothing ticked: the words, on blank axes
+        axes[0].text(0.5, 0.5, "Tick at least one panel", ha="center", va="center", transform=axes[0].transAxes)
+        axes[0].set_axis_off()
+    fig.suptitle(title or "Recording Overview", fontsize=tfs, fontweight="bold")
+    fig.set_layout_engine("tight", rect=[0, 0, 1, 0.97])               # laid out again whenever the window is resized, not once
+    return axes
+
+
+def recording_overview_from_tables(tables, parameters, figure=None, title=None):
+    for table in tables.values():
+        panels = overview_panels(table)
+        if panels:
+            fig = new_recording_overview_figure(figure, len(panels))
+            draw_recording_overview(fig, time=float_array(table["time_s"]), panels=panels, title=title or overview_title(parameters))
+            return fig
+    return None

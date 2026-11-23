@@ -24,7 +24,6 @@ import os
 from dataclasses import dataclass, field
 
 import numpy as np
-import scipy.stats as st
 
 from ..backend import api
 from .data import write_figure_data
@@ -75,7 +74,7 @@ class MeasuresDisplayOptions:
     build_measures_figure(results) alone still gives the standard figure.
 
     marker_labels renames AND combines in one move: markers that map to the same label share one
-    bar, with their subject-level values pooled (see _pooled_subject_values). A pooled bar has no
+    bar, with their subject-level values pooled (see api.group.pooled_subject_values). A pooled bar has no
     significance bracket against anything — the mixed model was fit on the original markers, not
     on whatever ad hoc groups the label mapping created, so there is no p-value for it to show.
     """
@@ -100,23 +99,6 @@ def _pooled_groups(spec, options):
             members[label] = []
         members[label].append(m)
     return order, members
-
-
-def _pooled_subject_values(means_df, measure, order, members):
-    """{label: {subject: pooled mean}} for one measure — a subject contributes to a group the
-    average of whichever of that group's original markers it actually has data for."""
-    sub = means_df[means_df["measure"] == measure] if len(means_df) else means_df
-    by_subject = {}
-    if len(sub):
-        for _, r in sub.iterrows():
-            by_subject.setdefault(r["subject"], {})[r["marker"]] = r["mean"]
-    out = {label: {} for label in order}
-    for subject, marker_vals in by_subject.items():
-        for label in order:
-            vals = [marker_vals[m] for m in members[label] if m in marker_vals]
-            if vals:
-                out[label][subject] = float(np.mean(vals))
-    return out
 
 
 def figure_title_text(fig):
@@ -179,9 +161,7 @@ def build_trace_figure(results, figure=None):
                 if marker in d and d[marker]["n"] > 0]
         if not rows:
             continue
-        stack = np.vstack(rows)
-        mean = stack.mean(axis=0)
-        sem = stack.std(axis=0, ddof=1) / np.sqrt(len(rows)) if len(rows) > 1 else np.zeros_like(mean)
+        mean, sem = api.stats.group_stats(np.vstack(rows))            # (the analysis code's mean and SEM across subjects: nothing is worked out here)
         color = colors[marker]
         ax.plot(grid, mean, color=color, lw=1.8, label=f"{marker}  (n={len(rows)})")
         ax.fill_between(grid, mean - sem, mean + sem, color=color, alpha=0.25, linewidth=0)
@@ -241,18 +221,6 @@ def build_heatmap_figures(results, figure=None):
     return out
 
 
-def _sig_stars(p):
-    if not np.isfinite(p):
-        return ""
-    if p < 0.001:
-        return "***"
-    if p < 0.01:
-        return "**"
-    if p < 0.05:
-        return "*"
-    return "ns"
-
-
 def _draw_brackets(ax, pairs, x_of, y_top, gap):
     """Draws each (marker_a, marker_b, text) as a bracket above the data, stacked so overlapping
     pairs don't collide — adjacent pairs sit lowest, pairs that span more markers sit higher."""
@@ -282,6 +250,7 @@ def _draw_measure_bars(ax, group_values, order, colors, options):
         color = colors[label]
         if not vals:
             continue
+        stats = api.group.summary_stats(vals)                 # (the analysis code's mean, SEM and quartiles of the subjects' values)
         if options.show_box:
             parts = ax.boxplot([vals], positions=[x], widths=0.55, patch_artist=True, showfliers=False, zorder=2,
                                boxprops=dict(facecolor=color, edgecolor="black", linewidth=1.0),
@@ -291,15 +260,12 @@ def _draw_measure_bars(ax, group_values, order, colors, options):
             for artists in parts.values():                    # the data CSV gets the box's statistics instead
                 for artist in artists:
                     artist.pyat_skip = True
-            q1, median, q3 = np.percentile(vals, [25, 50, 75])
             ax.pyat_series = [*getattr(ax, "pyat_series", []), {
-                "series": label, "kind": "box", "x": x, "y": float(median), "y_lower": float(q1), "y_upper": float(q3)}]
+                "series": label, "kind": "box", "x": x, "y": stats["median"], "y_lower": stats["q1"], "y_upper": stats["q3"]}]
         else:
-            mean = float(np.mean(vals))
-            ax.bar(x, mean, width=0.55, color=color, edgecolor="black", linewidth=1.0, zorder=2)
-            if len(vals) > 1:
-                sem = float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
-                ax.errorbar(x, mean, yerr=sem, color="black", capsize=4, elinewidth=1.2, zorder=3)
+            ax.bar(x, stats["mean"], width=0.55, color=color, edgecolor="black", linewidth=1.0, zorder=2)
+            if stats["sem"] is not None:
+                ax.errorbar(x, stats["mean"], yerr=stats["sem"], color="black", capsize=4, elinewidth=1.2, zorder=3)
         if options.show_samples:
             rng = np.random.RandomState(i)                    # deterministic jitter, same figure every rebuild
             jitter = (rng.rand(len(vals)) - 0.5) * 0.28
@@ -350,7 +316,7 @@ def build_measures_figure(results, options=None, measure=None, figure=None):
 
     for ax, measure in zip(axes, measures):
         label = api.group.metric_labels.get(measure, measure)
-        group_values = _pooled_subject_values(results.subject_means, measure, order, members)
+        group_values = api.group.pooled_subject_values(results.subject_means, measure, members)
         x_of = _draw_measure_bars(ax, group_values, order, colors, options)
 
         ax.set_xticks([x_of[label] for label in order])
@@ -368,7 +334,7 @@ def build_measures_figure(results, options=None, measure=None, figure=None):
             for _, r in pw.iterrows():
                 la, lb = pure_marker_to_label.get(r["marker_a"]), pure_marker_to_label.get(r["marker_b"])
                 if la is not None and lb is not None and la != lb:
-                    pairs.append((la, lb, _sig_stars(r["p_adjusted"])))
+                    pairs.append((la, lb, api.group.significance_stars(r["p_adjusted"])))
             if pairs:
                 new_top = _draw_brackets(ax, pairs, x_of, top + gap, gap)
                 ax.set_ylim(ax.get_ylim()[0], new_top + gap)
@@ -377,7 +343,7 @@ def build_measures_figure(results, options=None, measure=None, figure=None):
                                        & (results.fixed_effects["basis"] == "trials")] if len(results.fixed_effects) else results.fixed_effects
             if len(fe) and np.isfinite(fe.iloc[0]["p_t"]):
                 ax.axhline(0, color="black", lw=0.8, ls="--", zorder=0)
-                ax.text(0.5, 0.98, f"vs. 0: {_sig_stars(fe.iloc[0]['p_t'])} (p={fe.iloc[0]['p_t']:.3g})",
+                ax.text(0.5, 0.98, f"vs. 0: {api.group.significance_stars(fe.iloc[0]['p_t'])} (p={fe.iloc[0]['p_t']:.3g})",
                        transform=ax.transAxes, ha="center", va="top", fontsize=8)
         _style(ax)
 
@@ -431,9 +397,10 @@ def build_diagnostics_figure(results, figure=None):
         if len(spec.markers) > 1:
             ax_r.legend(fontsize=7, frameon=False, loc="best")
 
-        (osm, osr), (slope, intercept, _r) = st.probplot(d["resid"].to_numpy(float), dist="norm")
-        ax_q.scatter(osm, osr, s=8, alpha=0.5, color="0.4", label="Residual quantiles")
-        ax_q.plot(osm, slope * osm + intercept, color="black", lw=1.0, label="Normal reference line")
+        qq = api.group.normal_qq(d["resid"].to_numpy(float))
+        osm = qq["theoretical"]
+        ax_q.scatter(osm, qq["ordered"], s=8, alpha=0.5, color="0.4", label="Residual quantiles")
+        ax_q.plot(osm, qq["slope"] * osm + qq["intercept"], color="black", lw=1.0, label="Normal reference line")
         ax_q.set_xlabel("Theoretical quantiles")
         ax_q.set_ylabel("Residual quantiles")
         ax_q.set_title(f"{api.group.metric_labels.get(measure, measure)}: Q-Q")

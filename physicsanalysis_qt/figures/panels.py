@@ -2,7 +2,7 @@
 figures/panels.py
 -----------------
 The generic figure: one panel per result table, for what the app has no figure of its own for — a peak finder's results,
-the intervals between markers, the processed traces, and one table of an Event PETH view exported on its own. The
+the intervals between markers, the processed traces, one table of an Event PETH view exported on its own, and Compare Events' summary. The
 analysis windows' figures (draw.py) and the group analysis's (group.py) are the app's; these are the library's own.
 """
 
@@ -114,6 +114,32 @@ def _peth_trace(ax, table, tables, fig):
     _label(ax, "Time from event (s)", "Z-score")
 
 
+def _compare_peaks(ax, table, tables, fig):
+    """Compare Events' summary: the peak of each event's average Z-score, and when it comes."""
+    t = table.iloc[::-1]
+    names = t["Event"].astype(str)
+    peaks = pd.to_numeric(t["Peak Amplitude"], errors="coerce")
+    ax.barh(names, peaks, color="tab:blue", alpha=0.85)
+    for y, (peak, latency) in enumerate(zip(peaks, pd.to_numeric(t["Time-to-Peak (s)"], errors="coerce"))):
+        ax.text(peak, y, f"  at {latency:+.2f} s", va="center", ha="left" if peak >= 0 else "right", fontsize=8)
+    ax.axvline(0, color="black", lw=0.6, alpha=0.4)
+    _label(ax, "Peak of the average Z-score", "")
+
+
+def _compare_auc(ax, table, tables, fig):
+    """Compare Events' summary: the area under each event's average Z-score, split by sign, with the total."""
+    names = [str(n) for n in table["Event"]]
+    where = np.arange(len(table))
+    ax.bar(where - 0.2, pd.to_numeric(table["Positive AUC"], errors="coerce"), 0.4, color="green", alpha=0.6, label="Positive AUC")
+    ax.bar(where + 0.2, pd.to_numeric(table["Negative AUC"], errors="coerce"), 0.4, color="red", alpha=0.6, label="Negative AUC")
+    ax.plot(where, pd.to_numeric(table["Total AUC"], errors="coerce"), "D", color="black", label="Total AUC")
+    ax.set_xticks(where)
+    ax.set_xticklabels(names, rotation=20 if len(names) > 3 else 0, ha="right" if len(names) > 3 else "center")
+    ax.axhline(0, color="black", lw=0.6, alpha=0.4)
+    _label(ax, "", "Area under the average Z-score")
+    ax.legend(fontsize=8, frameon=False)
+
+
 def _trial_auc(ax, table, tables, fig):
     rows, group = _per_trial(table)
     alpha = np.where(rows["checked"], 0.85, 0.3)                    # an unchecked trial is faded
@@ -146,8 +172,9 @@ def _trial_bins(ax, table, tables, fig):
     finite = np.abs(values[np.isfinite(values)])
     scale = float(np.percentile(finite, 98)) if finite.size else 1.0
     image = ax.imshow(values, aspect="auto", cmap="YlGnBu_r", vmin=-scale or -1.0, vmax=scale or 1.0, interpolation="nearest")
-    ax.set_xticks(range(len(columns)))
-    ax.set_xticklabels([c[len("Bin "):-len(" Mean")] for c in columns], rotation=45, ha="right", fontsize=8)
+    across = max(1, -(-len(columns) // 30))                 # no more than 30 bin labels along the bottom (finer bins are labelled every few)
+    ax.set_xticks(range(0, len(columns), across))
+    ax.set_xticklabels([c[len("Bin "):-len(" Mean")] for c in columns][::across], rotation=45, ha="right", fontsize=8)
     step = max(1, -(-len(labels) // 12))
     ax.set_yticks(range(0, len(labels), step))
     ax.set_yticklabels(labels[::step], fontsize=8)
@@ -187,6 +214,9 @@ def _plan(tables, parameters):
             plan.append((1, _peaks_over_time, table, 1.0))
         elif _has(table, "Event", "Occurrences", "Hit Rate"):
             plan.append((1, _scan, table, 1.0))
+        elif _has(table, "Event", "Trials", "Peak Amplitude", "Total AUC", "Positive AUC", "Negative AUC"):
+            plan.append((1, _compare_peaks, table, 1.0))                # Compare Events' summary: its peaks, then its areas
+            plan.append((1, _compare_auc, table, 1.0))
         elif _has(table, "Event Time (s)", "Found", "Z-score"):
             plan.append((2, _alignment, table, 1.0))
         elif _has(table, "time_s", "dt_since_prev_any_s"):

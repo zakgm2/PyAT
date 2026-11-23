@@ -18,8 +18,10 @@ from physicsanalysis_qt.edit.attributes import AttributesDialog
 from physicsanalysis_qt.plot import interaction
 from physicsanalysis_qt.plot.plotting import simple_plot
 
+from physicsanalysis_qt.export import view_figure
+
 from tests.test_gui_reproduces import BUILT
-from tests.test_view_figure import ShowsRecording, oxysoft_cache
+from tests.test_view_figure import ShowsRecording, generic_cache, oxysoft_cache
 
 N, M, I = BUILT["normalized"], BUILT["main_driver"], BUILT["isosbestic"]
 
@@ -135,6 +137,71 @@ class TestApply(DialogCase):
         self.assertEqual(self.edits(), [("O2Hb channels", "Oxygenated", True), ("A", "Marker A", True)])
         self.assertEqual(self.ctx.plot_attrs["line_colors"], {"HHb channels": "#00AA00"})
         self.assertEqual(self.names(), names)                                                  # no signal was renamed
+
+
+class TestPoints(DialogCase):
+    """The Points section: how large the dot on every sample of every line is drawn — in the plot and in Export View."""
+
+    def line(self):
+        return self.ctx._decim_lines[0][0]
+
+    def test_it_starts_where_the_lines_are_drawn_and_an_untouched_slider_changes_nothing(self):
+        dlg = AttributesDialog(self.ctx.win, self.ctx)
+        self.assertEqual((dlg.points.slider.value(), dlg.points.spin.value()), (0, 0))
+        self.assertEqual((dlg.points.slider.maximum(), dlg.points.spin.maximum()), (figures.view.MAX_POINT_SIZE,) * 2)
+        self.assertEqual(self.apply(lambda d: d.e_title.setText("My title")), [])
+        self.assertIsNone(self.ctx.plot_attrs["point_size"])
+
+    def test_a_size_puts_a_dot_on_every_sample_and_the_slider_and_the_box_follow_each_other(self):
+        def tweak(d):
+            d.points.slider.setValue(7)
+            self.assertEqual(d.points.spin.value(), 7)
+            d.points.spin.setValue(9)
+            self.assertEqual(d.points.slider.value(), 9)
+        self.assertEqual(self.apply(tweak), [])
+        self.assertEqual(self.ctx.plot_attrs["point_size"], 9.0)
+        self.assertEqual((self.line().get_marker(), self.line().get_markersize()), ("o", 9.0))               # the plot on screen was drawn again
+        view = view_figure.build_view(self.ctx)
+        self.assertTrue(figures.has_points(view.fig))                                                          # ... and Export View has points to resize
+        self.assertEqual(view.parameters()["attributes"]["point_size"], 9.0)
+
+    def test_the_dialog_shows_the_size_that_is_set_and_as_drawn_takes_it_back(self):
+        self.apply(lambda d: d.points.spin.setValue(5))
+        dlg = AttributesDialog(self.ctx.win, self.ctx)
+        self.assertEqual((dlg.points.slider.value(), dlg.points.spin.value()), (5, 5))
+        dlg.points.btn_reset.click()
+        self.assertEqual((dlg.points.slider.value(), dlg.points.spin.value()), (0, 0))
+        self.assertEqual(self.apply(lambda d: d.points.btn_reset.click()), [])
+        self.assertIsNone(self.ctx.plot_attrs["point_size"])
+        self.assertIn(self.line().get_marker(), (None, "None"))
+
+    def test_a_size_set_by_a_script_is_kept_unless_the_slider_is_moved(self):
+        self.ctx.plot_attrs["point_size"] = 2.5
+        self.apply(lambda d: d.e_title.setText("My title"))
+        self.assertEqual(self.ctx.plot_attrs["point_size"], 2.5)                                               # the slider shows whole points: not applied untouched
+        self.apply(lambda d: d.points.slider.setValue(3))
+        self.assertEqual(self.ctx.plot_attrs["point_size"], 3.0)
+
+    def test_a_table_starts_with_its_dots_and_zero_takes_them_away(self):
+        self.show(generic_cache())
+        self.assertEqual(self.ctx._trace_default_point_size, 4)
+        self.assertEqual((self.line().get_marker(), self.line().get_markersize()), ("o", 4))
+        dlg = AttributesDialog(self.ctx.win, self.ctx)
+        self.assertEqual(dlg.points.slider.value(), 4)
+        self.apply(lambda d: d.points.slider.setValue(4))                                                       # moved to where it was: still no override
+        self.assertIsNone(self.ctx.plot_attrs["point_size"])
+        self.apply(lambda d: d.points.slider.setValue(0))
+        self.assertEqual(self.ctx.plot_attrs["point_size"], 0.0)
+        self.assertIn(self.line().get_marker(), (None, "None"))
+        self.apply(lambda d: d.points.btn_reset.click())
+        self.assertIsNone(self.ctx.plot_attrs["point_size"])
+        self.assertEqual(self.line().get_marker(), "o")
+
+    def test_every_line_of_a_recording_gets_the_dots(self):
+        self.show(oxysoft_cache())
+        self.apply(lambda d: d.points.slider.setValue(3))
+        lines = [line for line, _x, _y in self.ctx._decim_lines]
+        self.assertTrue(len(lines) > 1 and all(l.get_marker() == "o" and l.get_markersize() == 3.0 for l in lines))
 
 
 class TestTheAppsOtherWaysUseTheSameRules(DialogCase):

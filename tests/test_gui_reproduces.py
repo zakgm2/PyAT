@@ -312,6 +312,46 @@ class TestEventPeth(OpenEventPeth, GuiCase):
                 header, rows = self.view(dlg, view)
                 self.assert_same_export(header, rows, self.lib_table(prov, view), f"peth_unchecked_{view}")
 
+    def run_again_with_bins_of(self, dlg, bin_s):
+        dlg.e_bin.setText(bin_s)
+        with mock.patch("physicsanalysis_qt.app.background._new_toast", return_value=types.SimpleNamespace(update=lambda *a: None, finish=lambda *a: None)):
+            dlg._run(dlg.event_name)
+
+    def test_fine_bins_work_and_export_what_the_library_gives(self):
+        """A bin of 0.05 s or 0.01 s made the window fail ('DataFrame' has no attribute 'tolist'): the library's columns were all called alike."""
+        dlg = self.open()
+        for bin_s, first, columns in (("0.05", "Bin 0.00-0.05s Mean", 120), ("0.01", "Bin 0.00-0.01s Mean", 600)):
+            with self.subTest(bin_s):
+                self.run_again_with_bins_of(dlg, bin_s)
+                header, rows = self.view(dlg, "bins")
+                self.assertEqual(len(header), 3 + columns)                                   # Trial, Trial Event Time, the bins, Checked
+                self.assertEqual(len(set(header)), len(header))                              # each named for its own edges
+                self.assertEqual(header[2], first)
+                self.assert_same_export(header, rows, self.lib_table(dlg._provenance(), "bins"), f"peth_bins_{bin_s}")
+
+    def test_a_long_list_of_bins_is_cut_in_the_window_but_copied_whole(self):
+        dlg = self.open()
+        self.run_again_with_bins_of(dlg, "0.01")
+        dlg._view_buttons["bins"].setChecked(True)
+        shown = dlg.lbl_group.text()
+        self.assertEqual(shown.count("s: "), event_peth.MAX_BINS_SHOWN)
+        self.assertIn("0.00-0.01s:", shown)
+        self.assertTrue(shown.endswith("… and 576 more bins (Export CSV has every one)"))
+        copied = dlg._current_clipboard_text()
+        self.assertEqual(copied.count("s: "), 600)
+        self.assertIn("5.99-6.00s:", copied)
+        self.assertNotIn("more bins", copied)
+        dlg._view_buttons["peak"].setChecked(True)                                           # only the Bins view has this text
+        self.assertEqual(dlg._current_clipboard_text(), dlg.lbl_group.text())
+
+    def test_a_few_bins_are_listed_in_full(self):
+        dlg = self.open()
+        dlg._view_buttons["bins"].setChecked(True)
+        self.assertEqual(dlg.lbl_group.text().count("s: "), 3)
+        self.assertTrue(dlg.lbl_group.text().startswith("Group Mean Time Bins — 0.0-2.0s: "))
+        self.assertNotIn("more bins", dlg.lbl_group.text())
+        self.assertEqual(dlg._current_clipboard_text(), dlg.lbl_group.text())
+
     def test_the_figure_export_carries_the_current_selection(self):
         dlg = self.open()
         from PyQt6.QtCore import Qt

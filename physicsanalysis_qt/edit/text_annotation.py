@@ -99,9 +99,13 @@ def place_text_annotation(ctx, x, y):
     text, fontsize = dlg.values()
     if not text:
         return
+    try:
+        annotation = api.saved.new_text_annotation(x, y, text, fontsize)
+    except ValueError as exc:
+        show_error(ctx, str(exc))
+        return
     before = undo.snapshot(ctx)
-    ctx.cache.setdefault('text_annotations', []).append(
-        {"x": x, "y": y, "text": text, "fontsize": fontsize})
+    ctx.cache.setdefault('text_annotations', []).append(annotation)
     undo.push(ctx, "added a text box", before)
     from ..plot.plotting import simple_plot
     simple_plot(ctx)

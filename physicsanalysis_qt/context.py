@@ -59,9 +59,11 @@ def default_settings():
         "plot_engine":         "matplotlib",  # "matplotlib" | "pyqtgraph"
         "theme":               "light",       # "light" | "dark"
         "regression_method":   "ols",         # "ransac" | "huber" | "ols" — TDT motion correction, see PyATCLI.REGRESSION_METHODS
+        "pipeline":            {},            # the other processing choices that are not their default, {"denoise.cutoff_hz": 8.0, ...} — Options -> Pipeline options (app/pipeline_dialog.py)
         "save_provenance":     True,          # a <export>.provenance.json beside every export — see export/export_provenance.py
         "log_file_paths":      False,         # error log: True puts real file/folder names in it (off: <path-xxxxxx> tokens) — see app/errorlog.py
         "figure_export":       {},            # the Export Figure dialog's last choices (format, dpi, ...) — see export/figure_export.py
+        "overview_panels":     None,          # the Recording Overview's last choice of panels, in order (None: all) — see analysis/overview.py
     }
 
 
@@ -88,6 +90,7 @@ class AppState:
         self.pg_plot_item = None
         self.pg_viewbox = None
         self.pg_lines = []            # (PlotDataItem, full_x, full_y)
+        self.pg_dots = []             # (ScatterPlotItem, full_x, full_y) per line drawn with a dot on each sample
         self._pg_axis_probe = None    # (left_axis_w, bottom_axis_h) cache — see sync_pg_margins
         self.pg_hover_scatter = None
 
@@ -193,7 +196,9 @@ class AppState:
         # recording) — never for an in-place redraw of the same dataset
         # (e.g. switching the Plot signal dropdown, which must NOT reset
         # the zoom). See _last_zoomed_key above.
+        self.data_listeners = []    # called (no arguments) whenever _data_generation changes: what depends on the dataset checks it is still the one
         self._data_generation = 0
+        self.workspace = None       # the main window's tabs (ui/workspace.py), once the window is built: analysis windows open as tabs there
 
         # Marker mode
         self.marker_mode = False
@@ -266,6 +271,7 @@ class AppState:
         self._last_ylabel = ""
         self._legend_entries = []  # list of label strings, in plotted order
         self._trace_default_colors = {}  # legend entry name -> color the engines drew it in by default
+        self._trace_default_point_size = 0.0  # the dot (points) the lines have on each sample by default: none for a recording's signals
 
         # The one toast on screen (app/toasts.py keeps it to one at a time) and
         # the timer that will dismiss it, plus the separate pinned panel
@@ -287,9 +293,23 @@ class AppState:
         self.recording_id = None
         self.recording_generation = None
         self.recording_method = 'ols'    # the regression method the engine opened it with (a splice re-fits dF/F with the same one)
+        self.recording_load = {}         # the load options it was opened with (table, columns...), to open it again in a new engine
+        self.recording_pipeline = {}     # every pipeline option's value in force for it, {"denoise.cutoff_hz": 5.0, ...} (app/pipeline_dialog.py): what Save Changes keeps with it
+        self.recording_serial = 0        # which recording is on screen: one more each time another takes its place (not when the engine is reconnected)
+        self._reconnecting = False       # the recording is being opened again after the engine was ended (loading/common.reconnect_recording)
         self._bg_request = None   # the engine request running now, if any (background.run_engine)
         self._bg_bridge = None
         self._bg_extra = set()    # the bridges of requests that run beside it (Save Changes, provenance records: exclusive=False)
+
+    @property
+    def _data_generation(self):
+        return self._generation
+
+    @_data_generation.setter
+    def _data_generation(self, value):
+        self._generation = value
+        for listener in list(self.data_listeners):
+            listener()
 
     @property
     def engine(self):

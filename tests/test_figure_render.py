@@ -3,9 +3,11 @@ text, no clock in a vector file, edits for the export only."""
 
 import io
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -96,6 +98,214 @@ class TestRenderFigure(unittest.TestCase):
         self.assertEqual(pdf, ["Figure exported as PDF (vector), text converted to outlines"])
 
 
+class TestSize(unittest.TestCase):
+    """render_figure(size=...): the figure written at exactly the size asked, laid out again to fit it, and put back afterwards."""
+
+    def test_a_png_or_tiff_has_exactly_the_pixels_the_size_and_dpi_give(self):
+        fig = event_like_figure()
+        for fmt in ("png", "tiff"):
+            for size, dpi in (((3.35, 2.3), 300), ((12.0, 4.0), 200), ((6.0, 6.0), 100), ((2.3, 4.1), 300), ((1.0, 30.0), 72)):
+                with self.subTest(fmt=fmt, size=size, dpi=dpi):
+                    image = Image.open(io.BytesIO(render(fig, fmt=fmt, dpi=dpi, size=size)))
+                    self.assertEqual(image.size, (round(size[0] * dpi), round(size[1] * dpi)))            # (2.3 x 300 is 689.99999 as a float: still 690)
+
+    def test_without_a_size_the_figure_is_trimmed_to_its_content_as_before(self):
+        fig = event_like_figure()
+        self.assertEqual(render(fig, fmt="png", dpi=100), render(fig, fmt="png", dpi=100, size=None))
+        self.assertNotEqual(render(fig, fmt="png", dpi=100), render(fig, fmt="png", dpi=100, size=tuple(fig.get_size_inches())))
+
+    def test_a_pdf_page_and_an_svg_are_that_size_too(self):
+        fig = event_like_figure()
+        pdf = render(fig, fmt="pdf", size=(5.0, 3.0)).decode("latin-1")
+        box = [float(v) for v in re.search(r"/MediaBox \[([^\]]*)\]", pdf).group(1).split()]
+        self.assertEqual(box, [0.0, 0.0, 360.0, 216.0])                                                  # points: 72 to the inch
+        svg = render(fig, fmt="svg", size=(5.0, 3.0)).decode("utf-8")
+        self.assertRegex(svg, r'width="360(\.0+)?pt"')
+        self.assertRegex(svg, r'height="216(\.0+)?pt"')
+
+    def test_the_figure_is_put_back_exactly_as_it_was(self):
+        fig = event_like_figure()
+        fig.set_size_inches(7.3, 4.1)
+        before = ([tuple(ax.get_position().bounds) for ax in fig.axes], tuple(fig.get_size_inches()), fig.get_layout_engine().__class__)
+        render(fig, fmt="png", dpi=100, size=(3.0, 2.0))
+        render(fig, fmt="png", dpi=100, size=(20.0, 5.0))
+        self.assertEqual(([tuple(ax.get_position().bounds) for ax in fig.axes], tuple(fig.get_size_inches()), fig.get_layout_engine().__class__), before)
+
+    def test_it_is_put_back_when_writing_fails(self):
+        fig = event_like_figure()
+        before = ([tuple(ax.get_position().bounds) for ax in fig.axes], tuple(fig.get_size_inches()))
+        with mock.patch.object(type(fig), "savefig", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            fr.render_figure(fig, io.BytesIO(), size=(3.0, 2.0))
+        self.assertEqual(([tuple(ax.get_position().bounds) for ax in fig.axes], tuple(fig.get_size_inches())), before)
+
+    def test_it_is_laid_out_again_so_nothing_is_cut_off_at_a_small_or_a_wide_size(self):
+        fig = event_like_figure()
+        for size in ((3.0, 2.2), (14.0, 3.0), (5.0, 9.0)):
+            with self.subTest(size=size), fr._sized(fig, size, 100, True):
+                fig.canvas.draw()
+                tight, page = fig.get_tightbbox(), fig.bbox_inches
+                self.assertGreaterEqual(tight.x0, page.x0 - 0.02)
+                self.assertGreaterEqual(tight.y0, page.y0 - 0.02)
+                self.assertLessEqual(tight.x1, page.x1 + 0.02)
+                self.assertLessEqual(tight.y1, page.y1 + 0.02)
+
+    def test_a_figure_with_a_layout_engine_of_its_own_keeps_it(self):
+        from matplotlib.figure import Figure
+        fig = Figure(layout="constrained")
+        fig.subplots(2, 1)[1].set_xlabel("Time (s)")
+        image = Image.open(io.BytesIO(render(fig, fmt="png", dpi=100, size=(4.0, 7.0))))
+        self.assertEqual(image.size, (400, 700))
+        self.assertEqual(type(fig.get_layout_engine()).__name__, "ConstrainedLayoutEngine")
+
+    def test_a_window_showing_the_figure_is_not_resized(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        fig = event_like_figure()
+        canvas = FigureCanvasQTAgg(fig)
+        canvas.resize(520, 340)
+        app.processEvents()
+        shown = (canvas.width(), canvas.height())
+        render(fig, fmt="png", dpi=100, size=(9.0, 2.0))
+        app.processEvents()
+        self.assertEqual((canvas.width(), canvas.height()), shown)
+        canvas.deleteLater()
+
+    def test_a_size_that_is_not_two_numbers_or_is_out_of_range_is_refused(self):
+        fig = event_like_figure()
+        for bad in ((5.0,), (5.0, 3.0, 1.0), ("a", "b"), 5.0, (0.5, 3.0), (3.0, 31.0), (float("nan"), 3.0), (float("inf"), 3.0), (-2.0, 3.0)):
+            with self.subTest(bad), self.assertRaisesRegex(ValueError, "size must be"):
+                render(fig, fmt="png", dpi=100, size=bad)
+
+    def test_a_raster_file_with_too_many_pixels_is_refused_and_a_vector_file_is_not(self):
+        fig = event_like_figure()
+        with self.assertRaisesRegex(ValueError, "megapixels; the most a file may have is 120"):
+            render(fig, fmt="png", dpi=1200, size=(30.0, 30.0))
+        self.assertEqual(fr.checked_size((30.0, 30.0), "pdf", 1200), (30.0, 30.0))
+        self.assertEqual(fr.checked_size((10.0, 10.0), "png", 1000), (10.0, 10.0))                       # exactly 100 megapixels
+        self.assertIsNone(fr.checked_size(None))
+
+    def test_the_notes_say_the_size_that_was_set(self):
+        notes = fr.figure_notes({"format": "png", "dpi": 300, "transparent": False, "editable_text": True, "size": (6.0, 4.25)}, {})
+        self.assertEqual(notes, ["Figure exported as PNG image at 300 dpi, size set to 6.00 x 4.25 in"])
+        self.assertEqual(fr.figure_notes({"format": "png", "dpi": 300, "transparent": False, "editable_text": True}, {}),
+                         ["Figure exported as PNG image at 300 dpi"])
+
+
+def points_figure():
+    """A scatter of points, a line drawn with markers, an error bar, a plain line: and a legend naming them."""
+    import numpy as np
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=(6, 4))
+    ax = fig.subplots()
+    x = np.arange(6.0)
+    ax.scatter(x, x ** 2, s=30, label="peaks")
+    ax.plot(x, x, marker="o", markersize=5, label="marked")
+    ax.errorbar(x, x + 3, yerr=0.4, fmt="s", markersize=4, capsize=3, label="spread")
+    ax.plot(x, x * 0.5, label="plain")
+    ax.legend()
+    return fig
+
+
+def sizes_of(fig):
+    """(scatter sizes, marker sizes of the marked lines, marker sizes of the caps, the plain line's marker, and the legend handles' sizes)."""
+    ax = fig.axes[0]
+    scatter = ax.collections[0].get_sizes().tolist()
+    marked = [line.get_markersize() for line in ax.lines if line.get_label() == "marked"]
+    caps = [cap.get_markersize() for container in ax.containers for cap in container.lines[1]]
+    plain = [line.get_marker() for line in ax.lines if line.get_label() == "plain"]
+    handles = [(h.get_sizes().tolist() if hasattr(h, "get_sizes") else h.get_markersize()) for h in ax.get_legend().legend_handles
+               if hasattr(h, "get_sizes") or (hasattr(h, "get_marker") and h.get_marker() not in (None, "None"))]
+    return scatter, marked, caps, plain, handles
+
+
+class TestPointSize(unittest.TestCase):
+    def seen_while_writing(self, fig, scale):
+        seen = {}
+        original = fig.savefig
+
+        def spy(*args, **kwargs):
+            seen["during"] = sizes_of(fig)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(fig, "savefig", spy):
+            render(fig, fmt="png", dpi=100, point_scale=scale)
+        return seen["during"]
+
+    def test_the_points_are_that_many_times_as_large_while_the_figure_is_written(self):
+        fig = points_figure()
+        before = sizes_of(fig)
+        scatter, marked, caps, plain, handles = self.seen_while_writing(fig, 2.0)
+        self.assertEqual(scatter, [120.0])                                                       # a scatter point's size is its area: twice as wide is four times
+        self.assertEqual(marked, [10.0])
+        self.assertEqual(plain, ["None"])                                                        # a line with no markers has none to resize
+        self.assertEqual(caps, before[2])                                                        # the caps of an error bar are not points
+        self.assertIn([120.0], handles)                                                          # the legend shows the points as they are written
+        self.assertIn(10.0, handles)
+
+    def test_afterwards_everything_is_as_it_was_drawn_on_screen(self):
+        fig = points_figure()
+        before = sizes_of(fig)
+        render(fig, fmt="png", dpi=100, point_scale=3.0)
+        self.assertEqual(sizes_of(fig), before)
+
+    def test_even_if_writing_fails_they_are_put_back(self):
+        fig = points_figure()
+        before = sizes_of(fig)
+        with mock.patch.object(fig, "savefig", side_effect=RuntimeError("disk full")):
+            with self.assertRaises(RuntimeError):
+                render(fig, fmt="png", dpi=100, point_scale=2.0)
+        self.assertEqual(sizes_of(fig), before)
+
+    def test_smaller_works_too_and_as_drawn_changes_nothing(self):
+        fig = points_figure()
+        scatter, marked, *_ = self.seen_while_writing(fig, 0.5)
+        self.assertEqual((scatter, marked), ([7.5], [2.5]))
+        self.assertEqual(render(fig, fmt="png", dpi=100, point_scale=1.0), render(fig, fmt="png", dpi=100))
+        self.assertEqual(render(fig, fmt="png", dpi=100, point_scale=None), render(fig, fmt="png", dpi=100))
+
+    def test_larger_points_make_a_different_picture(self):
+        fig = points_figure()
+        self.assertNotEqual(render(fig, fmt="png", dpi=100, point_scale=3.0), render(fig, fmt="png", dpi=100))
+        self.assertNotEqual(render(fig, fmt="pdf", point_scale=3.0), render(fig, fmt="pdf"))
+
+    def test_a_figure_says_whether_it_has_points(self):
+        from physicsanalysis_qt import figures
+        self.assertTrue(figures.has_points(points_figure()))
+        self.assertFalse(figures.has_points(event_like_figure()))                                # a heatmap and a line: nothing to resize
+        from matplotlib.figure import Figure
+        plain = Figure()
+        plain.subplots().plot([0, 1], [0, 1])
+        self.assertFalse(figures.has_points(plain))
+        self.assertEqual(len(fr.figure_points(points_figure())), 5)                             # the scatter, the marked line, the error bar's line, and the two the legend shows
+
+    def test_a_size_that_is_not_a_sensible_one_is_refused_before_anything_is_written(self):
+        for bad in (0.05, 11.0, float("nan"), "big", 0):
+            with self.subTest(bad), self.assertRaisesRegex(ValueError, "point_scale"):
+                fr.checked_point_scale(bad)
+        self.assertIsNone(fr.checked_point_scale(None))
+        self.assertEqual(fr.checked_point_scale("1.5"), 1.5)
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "f.png")
+            with self.assertRaisesRegex(ValueError, "point_scale"):
+                fr.save_figure(points_figure(), path, point_scale=99)
+            self.assertFalse(os.path.exists(path))
+
+    def test_the_provenance_notes_say_it(self):
+        notes = fr.figure_notes({"format": "png", "dpi": 300, "transparent": False, "editable_text": True, "point_scale": 1.5}, {})
+        self.assertEqual(notes[0], "Figure exported as PNG image at 300 dpi, points drawn at 150% of their size")
+        self.assertNotIn("points", fr.figure_notes({"format": "png", "dpi": 300, "transparent": False, "editable_text": True}, {})[0])
+
+    def test_save_figure_writes_what_the_dialog_does(self):
+        with tempfile.TemporaryDirectory() as folder:
+            a, b = os.path.join(folder, "a.png"), os.path.join(folder, "b.png")
+            fr.save_figure(points_figure(), a, dpi=100, data=False, point_scale=2.5)
+            fr.save_figure(points_figure(), b, dpi=100, data=False)
+            self.assertNotEqual(Path(a).read_bytes(), Path(b).read_bytes())
+            self.assertEqual(Path(a).read_bytes(), render(points_figure(), fmt="png", dpi=100, point_scale=2.5, software=f"PyAT {fr.__version__}"))
+
+
 class TestSaveFigure(unittest.TestCase):
     """save_figure(): what Export Figure does around render_figure — the format from the file name, the data CSVs beside the
     figure, words renamed for the file only."""
@@ -162,6 +372,16 @@ class TestSaveFigure(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"does not say 'Time frm Event'.*it says:.*'Time from Event \(s\)'"):
             fr.save_figure(self.fig, self.path("a.png"), labels={"Time frm Event": "x"})
         self.assertEqual(os.listdir(self.tmp), [])
+
+    def test_a_size_is_the_files_size_and_a_bad_one_is_refused_before_anything_is_written(self):
+        written = fr.save_figure(self.fig, self.path("sized.png"), dpi=200, size=(4.0, 2.5), data=False)
+        with Image.open(written[0]) as image:
+            self.assertEqual(image.size, (800, 500))
+        with self.assertRaisesRegex(ValueError, "size must be"):
+            fr.save_figure(self.fig, self.path("bad.png"), size=(40.0, 2.0))
+        with self.assertRaisesRegex(ValueError, "megapixels"):
+            fr.save_figure(self.fig, self.path("huge.png"), dpi=1200, size=(30.0, 30.0))
+        self.assertEqual(sorted(os.listdir(self.tmp)), ["sized.png"])
 
     def test_a_word_said_twice_is_renamed_everywhere(self):
         fig = event_like_figure()

@@ -15,10 +15,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QEvent, QPointF, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication
+import pyqtgraph as pg
 
 from physicsanalysis_qt import context
 from physicsanalysis_qt.app import options
-from physicsanalysis_qt.plot import pg_interaction
+from physicsanalysis_qt.plot import pg_engine, pg_interaction
 from physicsanalysis_qt.edit import signal_names
 from physicsanalysis_qt.plot.plotting import simple_plot
 from physicsanalysis_qt.ui.main_window import switch_plot_engine
@@ -116,6 +117,147 @@ class PyQtGraphCase(WindowCase):
 
     def rename_dialog(self, answer, ok=True):
         return mock.patch.object(pg_interaction.QInputDialog, "getText", return_value=(answer, ok))
+
+
+class TestLegendOnPyQtGraph(PyQtGraphCase):
+    """The PyQtGraph legend reads as matplotlib's does: black words in a framed box, a line thick enough to tell its colour, and where Edit Attributes puts it."""
+
+    def setUp(self):
+        super().setUp()
+        for box in self.ctx.plot_signal_checkboxes.values():
+            box.setChecked(True)                                                       # three lines: three rows
+        simple_plot(self.ctx)
+        self.app.processEvents()
+        self.legend = self.plot_item.legend
+
+    def edges(self):
+        """How far the legend is from each edge of the plot's area, in pixels: (left, right, top, bottom)."""
+        box, area = self.legend.geometry(), self.plot_item.vb.geometry()
+        return box.left(), area.width() - box.right(), box.top(), area.height() - box.bottom()
+
+    def test_the_words_are_black_in_a_framed_box_nearly_opaque(self):
+        self.assertEqual(len(self.legend.items), 3)
+        for _sample, label in self.legend.items:
+            self.assertEqual(pg.mkColor(label.opts["color"]).name(), pg_engine.LEGEND_TEXT)
+        self.assertEqual(self.legend.opts["pen"].color().name(), pg_engine.LEGEND_EDGE)
+        self.assertEqual(self.legend.opts["brush"].color().getRgb(), pg_engine.LEGEND_FILL)
+
+    def test_the_words_stay_black_after_the_font_size_is_set_again(self):
+        pg_engine.pg_refresh_fonts(self.ctx)
+        self.app.processEvents()
+        for _sample, label in self.legend.items:
+            self.assertEqual(pg.mkColor(label.opts["color"]).name(), pg_engine.LEGEND_TEXT)
+
+    def test_a_line_is_shown_thick_enough_to_tell_its_colour(self):
+        from PyQt6.QtGui import QImage, QPainter
+        for sample, _label in self.legend.items:
+            self.assertIsInstance(sample, pg_engine._Sample)
+            image = QImage(24, 24, QImage.Format.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            sample.paint(painter)
+            painter.end()
+            thickness = sum(image.pixelColor(10, row).alpha() > 128 for row in range(24))
+            self.assertGreaterEqual(thickness, 2, "the traces are one pixel wide; the sample beside a name must be more")
+
+    def test_it_goes_where_edit_attributes_says(self):
+        for place, (horizontal, vertical) in {"upper left": ("left", "top"), "upper right": ("right", "top"), "lower left": ("left", "bottom"),
+                                              "lower right": ("right", "bottom"), "upper center": ("centre", "top"), "center": ("centre", "centre"),
+                                              "center left": ("left", "centre"), "center right": ("right", "centre"), "lower center": ("centre", "bottom")}.items():
+            with self.subTest(place):
+                self.ctx.plot_attrs["leg_loc"] = place
+                simple_plot(self.ctx)
+                self.app.processEvents()
+                left, right, top, bottom = self.edges()
+                pad = pg_engine.LEGEND_PAD_PX
+                self.assertAlmostEqual({"left": left, "right": right}.get(horizontal, left - right), pad if horizontal != "centre" else 0, delta=2)
+                self.assertAlmostEqual({"top": top, "bottom": bottom}.get(vertical, top - bottom), pad if vertical != "centre" else 0, delta=2)
+
+    def test_the_position_box_of_the_dialog_moves_it(self):
+        from physicsanalysis_qt.edit.attributes import AttributesDialog
+        dlg = AttributesDialog(self.ctx.win, self.ctx)
+        dlg.leg_loc_combo.setCurrentText("lower right")
+        dlg._apply()
+        self.app.processEvents()
+        left, right, top, bottom = self.edges()
+        self.assertAlmostEqual(right, pg_engine.LEGEND_PAD_PX, delta=2)
+        self.assertAlmostEqual(bottom, pg_engine.LEGEND_PAD_PX, delta=2)
+
+    def test_a_place_it_does_not_know_is_the_upper_left(self):
+        pg_engine._place_legend(self.legend, "nowhere in particular")
+        self.app.processEvents()
+        left, _right, top, _bottom = self.edges()
+        self.assertAlmostEqual(left, pg_engine.LEGEND_PAD_PX, delta=2)
+        self.assertAlmostEqual(top, pg_engine.LEGEND_PAD_PX, delta=2)
+
+
+class TestPointsOnPyQtGraph(PyQtGraphCase):
+    """The point size of Edit Graph Attributes on the PyQtGraph plot: a dot on every sample — but only the samples in view, because a dot
+    on each of millions of samples would make every pan and zoom crawl."""
+
+    def draw_with(self, size):
+        self.ctx.plot_attrs["point_size"] = size
+        simple_plot(self.ctx)
+        self.app.processEvents()
+
+    def dots(self):
+        (scatter, x, y), = self.ctx.pg_dots
+        return scatter, x, y
+
+    def test_a_recordings_line_has_no_dots_until_the_point_size_is_set(self):
+        self.assertEqual(self.ctx.pg_dots, [])
+        self.draw_with(6.0)
+        scatter, _x, _y = self.dots()
+        self.assertAlmostEqual(scatter.opts["size"], 6.0 * pg_engine.PX_PER_POINT)
+        self.draw_with(None)
+        self.assertEqual(self.ctx.pg_dots, [])
+        self.assertEqual([i for i in self.plot_item.items if isinstance(i, pg.ScatterPlotItem)], [self.ctx.pg_hover_scatter])      # no dots left behind
+
+    def test_zero_draws_none(self):
+        self.draw_with(0.0)
+        self.assertEqual(self.ctx.pg_dots, [])
+
+    def test_a_wide_view_is_thinned_and_keeps_the_highest_and_lowest_samples(self):
+        self.draw_with(4.0)
+        scatter, x, y = self.dots()
+        drawn_x, drawn_y = scatter.getData()
+        self.assertGreater(len(x), pg_engine.DOT_LIMIT)                                         # the recording has more samples than dots are drawn
+        self.assertLessEqual(len(drawn_x), pg_engine.DOT_LIMIT)
+        self.assertEqual((drawn_y.max(), drawn_y.min()), (y.max(), y.min()))
+
+    def test_zooming_in_draws_a_dot_on_each_sample_in_view_and_only_those(self):
+        self.draw_with(4.0)
+        scatter, x, _y = self.dots()
+        self.plot_item.vb.setXRange(10.0, 10.5, padding=0)
+        self.app.processEvents()
+        drawn_x, _ = scatter.getData()
+        inside = x[(x >= 10.0) & (x <= 10.5)]
+        self.assertGreaterEqual(len(inside), 100)
+        self.assertTrue(set(inside.tolist()) <= set(drawn_x.tolist()))                          # a dot on every sample in view
+        self.assertLessEqual(len(drawn_x), len(inside) + 2)                                     # (and one past each edge, so the line meets the edge)
+        self.plot_item.vb.setXRange(20.0, 20.2, padding=0)
+        self.app.processEvents()
+        drawn_x, _ = scatter.getData()
+        self.assertTrue(19.99 <= drawn_x.min() and drawn_x.max() <= 20.21)                      # panning draws the dots of the new view
+
+    def test_redrawing_the_plot_keeps_the_view_and_its_dots(self):
+        self.draw_with(4.0)
+        self.plot_item.vb.setXRange(10.0, 10.5, padding=0)
+        self.app.processEvents()
+        simple_plot(self.ctx)
+        self.app.processEvents()
+        scatter, _x, _y = self.dots()
+        drawn_x, _ = scatter.getData()
+        self.assertTrue(9.99 <= drawn_x.min() and drawn_x.max() <= 10.51)
+
+    def test_switching_the_plot_signal_redraws_in_full_so_the_dots_follow(self):
+        self.draw_with(4.0)
+        self.assertFalse(pg_engine.pg_update_active_signal(self.ctx))                         # the quick retarget of one line would leave its dots behind
+
+    def test_the_hover_marker_stays_over_the_dots(self):
+        self.draw_with(4.0)
+        scatter, _x, _y = self.dots()
+        self.assertGreater(self.ctx.pg_hover_scatter.zValue(), scatter.zValue())
 
 
 class TestDoubleClickToRename(PyQtGraphCase):

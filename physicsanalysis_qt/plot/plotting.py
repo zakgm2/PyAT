@@ -39,6 +39,14 @@ def update_decimated_lines(ctx):
         line.set_data(dx, dy)
 
 
+def on_xlim_changed(ctx):
+    """The axes' range changed: thin the traces to it. Not in the middle of a pan: there the limits change at every pointer move (125 a second or more), thinning
+    three traces of a million samples each takes longer than a frame, and only the frames that are drawn need it — the pan does it where it asks for one
+    (plot/interaction.py), and where the button is let go."""
+    if not ctx.is_dragging:
+        update_decimated_lines(ctx)
+
+
 def _update_plot_with_notes(ctx, markers, ax=None):
     """Draws the markers (library_view.draw_markers: a dashed line each, and its label along the line). On the live axes (the
     default) ctx._marker_label_artists is refreshed for hit-testing; on another `ax` (the export figure) nothing about the live
@@ -201,7 +209,7 @@ def simple_plot(ctx, draw_now=True):
     # (all of which go through ax.set_xlim somewhere) automatically keeps
     # each trace decimated to the visible range — no changes needed in
     # plot/interaction.py to benefit from it.
-    ax.callbacks.connect('xlim_changed', lambda _ax: update_decimated_lines(ctx))
+    ax.callbacks.connect('xlim_changed', lambda _ax: on_xlim_changed(ctx))
 
     _update_plot_with_notes(ctx, cache['markers'])
     _draw_highlights(ctx, cache.get('highlights', []))
@@ -222,13 +230,15 @@ def simple_plot(ctx, draw_now=True):
     if ctx.show_grid:
         ax.grid(True, linestyle=':', alpha=0.4, color=mpl_colors(ctx.settings.get("theme", "light"))["grid"])
 
-    # Hover tracker dots — one per snappable line, drawn via blit
+    # Hover tracker dots — one per snappable line, drawn via blit. Not visible until the pointer is over the plot (plot/interaction.py), and
+    # not again after any full draw (on_draw): matplotlib's RectangleSelector draws the whole canvas a second time after every draw in which an
+    # animated artist is visible, to take its background without them — which made every redraw (every frame of a pan) cost twice.
     ctx.tracker_dots = [
-        ax.plot([], [], 'o', markersize=6, animated=True, zorder=6)[0]
+        ax.plot([], [], 'o', markersize=6, animated=True, visible=False, zorder=6)[0]
         for _ in range(n_snap_lines)
     ]
     ctx.connecting_line, = ax.plot([], [], color='black', lw=1.0, alpha=0.6,
-                                    animated=True, zorder=5)
+                                    animated=True, visible=False, zorder=5)
     ctx._hover_bg = None
 
     if draw_now:

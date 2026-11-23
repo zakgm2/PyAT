@@ -62,6 +62,12 @@ def _defaults():
     return api.group.new_settings()
 
 
+def _pipeline_text(spec):
+    """What the summary says of the pipeline options every recording is processed with."""
+    n = len(spec.pipeline)
+    return "default pipeline options" if not n else f"{n} pipeline option{'s' if n != 1 else ''} changed"
+
+
 def describe_analysis(n_markers):
     """One sentence on what the analysis will do with this many markers."""
     if n_markers == 0:
@@ -362,12 +368,12 @@ class _WindowPage(_Page):
             "relative to the event (before it is negative)."))
 
         grid = QGridLayout()
-        self.pre = _seconds_spin(0.5, 600, _defaults().pre)
-        self.post = _seconds_spin(0.5, 600, _defaults().post)
-        self.b0 = _seconds_spin(-600, 0, _defaults().baseline[0])
-        self.b1 = _seconds_spin(-600, 0, _defaults().baseline[1])
-        self.r0 = _seconds_spin(0, 600, _defaults().response[0])
-        self.r1 = _seconds_spin(0, 600, _defaults().response[1])
+        self.pre = _seconds_spin(0.5, 600, dlg.defaults().pre)
+        self.post = _seconds_spin(0.5, 600, dlg.defaults().post)
+        self.b0 = _seconds_spin(-600, 0, dlg.defaults().baseline[0])
+        self.b1 = _seconds_spin(-600, 0, dlg.defaults().baseline[1])
+        self.r0 = _seconds_spin(0, 600, dlg.defaults().response[0])
+        self.r1 = _seconds_spin(0, 600, dlg.defaults().response[1])
         grid.addWidget(QLabel("Window:"), 0, 0)
         grid.addWidget(QLabel("before the event"), 0, 1)
         grid.addWidget(self.pre, 0, 2)
@@ -383,7 +389,7 @@ class _WindowPage(_Page):
         grid.addWidget(self.r0, 2, 2)
         grid.addWidget(QLabel("to"), 2, 3)
         grid.addWidget(self.r1, 2, 4)
-        self.smooth = _seconds_spin(0.0, 10.0, _defaults().smooth_seconds)
+        self.smooth = _seconds_spin(0.0, 10.0, dlg.defaults().smooth_seconds)
         self.smooth.setDecimals(2)
         self.smooth.setSingleStep(0.1)
         grid.addWidget(QLabel("Smoothing:"), 3, 0)
@@ -437,10 +443,9 @@ class _WindowPage(_Page):
             rb.toggled.connect(lambda _c: self._refresh())
 
     def _reset(self):
-        for w, v in ((self.pre, _defaults().pre), (self.post, _defaults().post),
-                     (self.b0, _defaults().baseline[0]), (self.b1, _defaults().baseline[1]),
-                     (self.r0, _defaults().response[0]), (self.r1, _defaults().response[1]),
-                     (self.smooth, _defaults().smooth_seconds)):
+        d = self.dlg.defaults()
+        for w, v in ((self.pre, d.pre), (self.post, d.post), (self.b0, d.baseline[0]), (self.b1, d.baseline[1]),
+                     (self.r0, d.response[0]), (self.r1, d.response[1]), (self.smooth, d.smooth_seconds)):
             w.setValue(v)
         self._signal_buttons["dff"].setChecked(True)
 
@@ -595,7 +600,7 @@ class _ReviewPage(_Page):
             f"{spec.baseline[1]:g} s; response {spec.response[0]:g} to {spec.response[1]:g} s",
             f"<b>Signal</b>: {e(_SIGNAL_TEXT[spec.signal])}; "
             + (f"smoothed with a {spec.smooth_seconds:g} s moving average" if spec.smooth_seconds > 0 else "not smoothed")
-            + f"; motion correction {spec.regression_method.upper()} (Options)",
+            + f"; motion correction {spec.regression_method.upper()}; {_pipeline_text(spec)} (Options → Pipeline)",
             f"<b>Measures</b>: {e(measures)}; {e(direction)}; decay to {spec.decay_fraction:.0%} of the peak",
             f"<b>Comparisons</b>: {e(api.group.correction_labels[spec.correction])}, significance level {spec.alpha:g}",
             e(describe_analysis(n_mark)),
@@ -655,6 +660,7 @@ class GroupSetupDialog(QDialog):
         self.store_labels = dict(store_labels or {})
         self.spec = None
         self.group_dir = None
+        self._defaults = None                                  # defaults(): made on first use, once the pipeline options are known
 
         self.setWindowTitle("Group analysis")
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
@@ -700,9 +706,17 @@ class GroupSetupDialog(QDialog):
     def selected_markers(self):
         return self.pages[1].selected()
 
+    def defaults(self):
+        """The settings as they start out for this person: the library's defaults, with the smoothing and the baseline window started from the pipeline options
+        chosen in Options (every recording is processed with those)."""
+        if self._defaults is None:
+            from ...loading.common import pipeline_settings
+            self._defaults = api.group.new_settings(pipeline=pipeline_settings(self.ctx))
+        return self._defaults
+
     def build_spec(self):
         spec = api.group.new_settings(regression_method=self.ctx.settings.get("regression_method", "ols"),
-                                      store_labels=dict(self.store_labels))
+                                      store_labels=dict(self.store_labels), pipeline=dict(self.defaults().pipeline))
         for p in self.pages:
             p.apply(spec)
         return spec

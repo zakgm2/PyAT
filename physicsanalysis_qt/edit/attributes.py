@@ -2,14 +2,16 @@
 edit/attributes.py
 ------------------
 Edit Attributes dialog: title/label text and font sizes, per-trace line
-colors, legend font size/position, per-legend-entry show/hide + rename, and
-grid visibility. Renaming the legend entry of a recording's signal (a TDT trace) renames the signal itself —
+colors, the size of the dot on every sample, legend font size/position,
+per-legend-entry show/hide + rename, and grid visibility. Renaming the legend entry of a recording's signal (a TDT trace) renames the signal itself —
 see edit/signal_names.py — so the new name follows it into the analyses and exports. Line colors are picked with edit/color_picker.py's
 hue/saturation field and stored in plot_attrs["line_colors"], which every
 plotting engine reads through context.trace_color().
+
+The recording's plot is what this edits — unless an analysis window is in front that has a figure of its own to edit (edit/figure_attributes.py):
+`open_attributes_window` is the Edit Attributes button, and edits whichever of the two is on screen.
 """
 
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel,
     QLineEdit, QComboBox, QCheckBox, QPushButton,
@@ -17,54 +19,11 @@ from PyQt6.QtWidgets import (
 
 from .. import figures
 from ..plot import plotting
-from .color_picker import pick_color
+from .attribute_widgets import ColorRow, PointSizeBox
 from ..plot.interaction import _refresh_hover_bg
 from .signal_names import apply_signal_renames
 from ..app.toasts import show_error
 from ..app.window_fit import scroll_body, fit_dialog_to_content
-
-
-class _ColorRow:
-    """One trace's line-color state in the Line Colors section: a swatch
-    that opens the picker, and a Reset button. `orig` is the trace's raw
-    (un-renamed) name — what plot_attrs["line_colors"] is keyed by — and
-    `name` is what to call it in the UI."""
-
-    def __init__(self, dialog, orig, name, default_color, override):
-        self.dialog = dialog
-        self.orig = orig
-        self.name = name
-        self.default_color = QColor(default_color).name()
-        self.override = override  # "#rrggbb" or None (= the engine's default color)
-
-        self.color_btn = QPushButton()
-        self.color_btn.setFixedSize(60, 22)
-        self.color_btn.setToolTip("Choose this line's color")
-        self.color_btn.clicked.connect(self._pick)
-        self.reset_btn = QPushButton("Reset")
-        self.reset_btn.setToolTip("Back to the default color")
-        self.reset_btn.clicked.connect(self._reset)
-        self._refresh()
-
-    @property
-    def color(self):
-        return self.override or self.default_color
-
-    def _refresh(self):
-        self.color_btn.setStyleSheet(
-            f"background-color: {self.color}; border: 1px solid #666;")
-        self.reset_btn.setEnabled(self.override is not None)
-
-    def _pick(self):
-        picked = pick_color(self.dialog, QColor(self.color), f"Line Color — {self.name}")
-        if picked is not None:
-            # Picking the default color back is the same as having no override.
-            self.override = None if picked.name() == self.default_color else picked.name()
-            self._refresh()
-
-    def _reset(self):
-        self.override = None
-        self._refresh()
 
 
 class AttributesDialog(QDialog):
@@ -107,12 +66,12 @@ class AttributesDialog(QDialog):
         # (or under what name) it shows in the legend below.
         lc = QGroupBox("Line Colors")
         lc_layout = QVBoxLayout(lc)
-        self.color_rows = []  # one _ColorRow per trace
+        self.color_rows = []  # one ColorRow per trace
         if entries:
             color_grid = QGridLayout()
             color_grid.setColumnStretch(0, 1)
             for i, l in enumerate(entries):
-                row = _ColorRow(self, l, saved_entry_map.get(l, (l, True))[0],
+                row = ColorRow(self, l, saved_entry_map.get(l, (l, True))[0],
                                 ctx._trace_default_colors.get(l, "#808080"),
                                 plot_attrs["line_colors"].get(l))
                 color_grid.addWidget(QLabel(row.name), i, 0)
@@ -125,6 +84,8 @@ class AttributesDialog(QDialog):
             no_lines.setStyleSheet("color: gray;")
             lc_layout.addWidget(no_lines)
         layout.addWidget(lc)
+
+        layout.addWidget(self._points_box(ctx, plot_attrs, bool(entries)))
 
         # Legend
         lf2 = QGroupBox("Legend")
@@ -180,6 +141,15 @@ class AttributesDialog(QDialog):
 
         fit_dialog_to_content(self, body)
 
+    def _points_box(self, ctx, plot_attrs, has_lines):
+        """The "Points" section (edit/attribute_widgets.py): "As drawn" is what the lines have without a choice here (no dots for a recording's
+        signals, a dot per sample for a table's columns)."""
+        self.points = PointSizeBox(
+            figures.view.MAX_POINT_SIZE, float(getattr(ctx, "_trace_default_point_size", 0.0)), plot_attrs.get("point_size"),
+            "A dot on every sample of every line, in the plot and in Export View (0 draws none). "
+            "In Export Figure the points can be made larger or smaller still.", enabled=has_lines)
+        return self.points
+
     def _row(self, grid, row, label_text, default_text, default_size):
         grid.addWidget(QLabel(label_text), row, 0)
         e_text = QLineEdit(default_text)
@@ -212,7 +182,8 @@ class AttributesDialog(QDialog):
                 sizes={"title_fs": self.e_title_fs.text(), "xlabel_fs": self.e_xlabel_fs.text(), "ylabel_fs": self.e_ylabel_fs.text()},
                 leg_fs=self.e_leg_fs.text(), leg_loc=self.leg_loc_combo.currentText(), bold=self.cb_bold.isChecked(),
                 entries=[(orig_l, le.text(), cb.isChecked()) for cb, le, orig_l in self.entry_widgets],
-                colors=[(row.orig, row.override, row.default_color) for row in self.color_rows])
+                colors=[(row.orig, row.override, row.default_color) for row in self.color_rows],
+                point_size=self.points.chosen(), point_default=self.points.default)
         except ValueError as e:
             show_error(ctx, str(e))                                         # nothing was changed; the dialog stays open
             return
@@ -222,7 +193,7 @@ class AttributesDialog(QDialog):
         # Colors are baked into each line when it's drawn, so a color change
         # needs a redraw on every engine; matplotlib's cheaper in-place
         # attribute refresh is only enough when nothing about the lines moved.
-        if result.colors_changed or result.renamed or ctx.settings.get("plot_engine") == "pyqtgraph":
+        if result.colors_changed or result.points_changed or result.renamed or ctx.settings.get("plot_engine") == "pyqtgraph":
             plotting.simple_plot(ctx)  # pyqtgraph has no incremental "apply" — full rebuild
         else:
             plotting._apply_plot_attrs(ctx)
@@ -231,5 +202,14 @@ class AttributesDialog(QDialog):
 
 
 def open_attributes_window(ctx):
+    """The Edit Attributes button: edits the figure of the analysis window that is in front, if it has one (edit/figure_attributes.py); otherwise the
+    recording's plot, which is brought to the front first (as for every tool that acts on it)."""
+    workspace = getattr(ctx, "workspace", None)
+    editable = workspace.front_editable() if workspace is not None else None
+    if editable is not None:
+        editable.edit()
+        return
+    if workspace is not None:
+        workspace.show_recording()
     dlg = AttributesDialog(ctx.win, ctx)
     dlg.exec()

@@ -3,7 +3,7 @@ analysis/result_window.py
 -------------------------
 The window the click analyses (Z-Score, AUC, FFT) show their answer in. It used to be written out in each of them: the figure, the numbers
 beside it as text, and the buttons under them — Copy and Export CSV (dispatch.add_stats_export_buttons), Export Plot (the Export Figure
-dialog) and Done.
+dialog) and Done. Its figure can be edited (Edit Attributes: titles, labels, colours, the legend).
 
     run_click_analysis(ctx, center_t, name, kind, show)   asks the engine for the library's `kind` around the clicked time and calls
                                                           show(ctx, center_t, pre, post, result) with its tables when they come
@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, Q
 
 from ..app.toasts import show_window_toast
 from ..app.window_fit import fit_to_screen
+from ..edit.figure_attributes import EditableFigure
+from ..ui.workspace import present
 from .analysis_picker import add_done_button
 from .dispatch import add_stats_export_buttons, export_figure_to_file, get_window
 from .windows import request_analysis
@@ -50,7 +52,7 @@ def report_label(text=""):
 
 
 def show_result_window(ctx, center_t, pre, post, *, name, prefix, kind, fig, report, csv_header, csv_rows, title=None, report_first=False):
-    """Opens the window (and waits for it to be closed).
+    """Opens the window, as a tab of the main window (ui/workspace.py).
 
     name        what the analysis is called in the toast ("Z-Score")
     prefix      the start of the CSV's and the figure's file name ("ZScore")
@@ -69,6 +71,8 @@ def show_result_window(ctx, center_t, pre, post, *, name, prefix, kind, fig, rep
 
     label = report_label(report)
     canvas = FigureCanvasQTAgg(fig)
+    dlg.editable_figure = EditableFigure(ctx, dlg, fig, canvas)                  # Edit Attributes edits this figure (edit/figure_attributes.py)
+    dlg.editable_figure.drawn()
     if report_first:
         layout.addWidget(label)
         layout.addWidget(canvas, stretch=1)
@@ -93,4 +97,4 @@ def show_result_window(ctx, center_t, pre, post, *, name, prefix, kind, fig, rep
     layout.addLayout(btn_row)
 
     show_window_toast(ctx, f"{name} computed at {center_t:.1f}s")
-    dlg.exec()
+    present(ctx, dlg, f"{name} {center_t:.1f}s")

@@ -33,15 +33,22 @@ UNKNOWN_COLOR = "#555555"
 
 @dataclass
 class WindowResult:
-    """What the engine answered for one analysis: its tables (DataFrames, by name), summary and notes."""
+    """What the engine answered for one analysis: its tables (DataFrames, by name), summary and notes — or, asked with tables="files", the
+    path of each table's CSV in `files` (and no tables)."""
     tables: dict = field(default_factory=dict)
     summary: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
+    files: dict = field(default_factory=dict)
 
 
 def tables_from_answer(answer):
     """{name: DataFrame} from a `run` answer asked with tables="inline" ({"columns", "rows", "data": {column: [values]}})."""
-    return {name: pd.DataFrame(t["data"], columns=t["columns"]) for name, t in (answer.get("tables") or {}).items()}
+    return {name: pd.DataFrame(t["data"], columns=t["columns"]) for name, t in (answer.get("tables") or {}).items() if "data" in t}
+
+
+def files_from_answer(answer):
+    """{name: path} of the table files of a `run` answer asked with tables="files"."""
+    return {name: t["path"] for name, t in (answer.get("tables") or {}).items() if "path" in t}
 
 
 def column(table, name):
@@ -66,10 +73,11 @@ def channel_colors(ctx):
     return {"Signal": GENERIC_COLOR}
 
 
-def request_analysis(ctx, kind, parameters, on_result, label=None, on_error=None):
+def request_analysis(ctx, kind, parameters, on_result, label=None, on_error=None, tables="inline"):
     """Asks the engine to run the analysis `kind` on the loaded recording as it is now (its splices, the window's markers and signal names) and
     calls on_result(WindowResult) when it has. A failure goes to on_error(message) — the error box by default. Returns the engine request, or
-    None if nothing was started (the engine was busy, or this recording is not one the engine holds)."""
+    None if nothing was started (the engine was busy, or this recording is not one the engine holds). `tables` is "inline" (the answer carries
+    them) or "files" (each is written as a CSV and its path comes back, for one too big for a message)."""
     try:
         ref = recording_ref(ctx)
     except BackendError as e:
@@ -81,10 +89,10 @@ def request_analysis(ctx, kind, parameters, on_result, label=None, on_error=None
         if (ctx._data_generation, ctx.recording_id) != token:
             show_window_toast(ctx, "The recording changed while the analysis ran — run it again.")
             return
-        on_result(WindowResult(tables_from_answer(answer), answer.get("summary") or {}, answer.get("notes") or []))
+        on_result(WindowResult(tables_from_answer(answer), answer.get("summary") or {}, answer.get("notes") or [], files_from_answer(answer)))
 
     def _on_error(message):
         (on_error or (lambda m: show_error(ctx, m)))(message)
 
     return run_engine(ctx, "run", {"kind": kind, "recording": ref, "parameters": parameters, "store_labels": dict(ctx.store_labels),
-                                   "tables": "inline"}, _on_success, _on_error, label=label)
+                                   "tables": tables}, _on_success, _on_error, label=label)

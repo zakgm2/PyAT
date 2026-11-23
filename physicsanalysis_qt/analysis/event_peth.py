@@ -29,8 +29,13 @@ from ..backend.recordings import decode_arrays, recording_ref
 from ..app.background import run_engine
 from ..context import get_normalized_signal, signal_short_label
 from ..app.toasts import show_error, show_window_toast
+from ..ui.workspace import present
 from .dispatch import add_stats_export_buttons, export_figure_to_file, get_window
+from .event_compare import launch_event_compare
 from ..app.window_fit import fit_to_screen
+from ..edit.figure_attributes import EditableFigure
+
+MAX_BINS_SHOWN = 24            # the Bins view lists this many bins under the plot; finer bins would fill the window (Copy and Export CSV have all)
 
 
 def _group_markers_by_name(ctx):
@@ -90,18 +95,6 @@ class _EventPethResultsDialog(QDialog):
         top_row.addWidget(self.sort_combo)
         layout.addLayout(top_row)
 
-        # Figure title — defaults to "Event PETH — {event}" and tracks the event picker until the
-        # user types their own; from then on it's left alone (even across event switches/
-        # Recalculate), the same "typed text wins" convention as Edit Attributes' own title field.
-        title_row = QHBoxLayout()
-        title_row.addWidget(QLabel("Title:"))
-        self.e_title = QLineEdit(f"Event PETH — {initial_event_name}")
-        self._title_user_edited = False
-        self.e_title.textEdited.connect(lambda: setattr(self, "_title_user_edited", True))
-        self.e_title.editingFinished.connect(self._redraw)
-        title_row.addWidget(self.e_title, stretch=1)
-        layout.addLayout(title_row)
-
         window_row = QHBoxLayout()
         window_row.addWidget(QLabel("Window — pre (s):"))
         self.e_pre = QLineEdit(str(int(ctx.window_pre or get_window(ctx)[0])))
@@ -141,11 +134,18 @@ class _EventPethResultsDialog(QDialog):
             view_row.addWidget(btn)
         self._view_buttons["zscore"].setChecked(True)
         view_row.addStretch(1)
+        btn_compare = QPushButton("Compare events…")
+        btn_compare.setToolTip("Overlay the average Z-score of several events on one plot (starting with this one and this window).")
+        btn_compare.clicked.connect(lambda: launch_event_compare(ctx, [self.event_name], (self.pre, self.post, self.bin_width)))
+        view_row.addWidget(btn_compare)
         layout.addLayout(view_row)
 
         self.fig = figures.new_event_peth_figure()
         self.ax_heat = self.ax_line = None              # made by each draw (figures.draw_event_peth)
         self.canvas = FigureCanvasQTAgg(self.fig)
+        # The figure's title, labels, colours and legend are Edit Attributes' (edit/figure_attributes.py): the title is "Event PETH — {event}" and follows
+        # the event until one is typed there, from then on it is left alone (across event switches, views and Recalculate).
+        self.editable_figure = EditableFigure(ctx, self, self.fig, self.canvas)
         layout.addWidget(self.canvas, stretch=1)
 
         self.lbl_group = QLabel("")
@@ -244,8 +244,6 @@ class _EventPethResultsDialog(QDialog):
         ctx = self.ctx
         self.event_name = event_name
         self.combo_event.setEnabled(False)
-        if not self._title_user_edited:
-            self.e_title.setText(f"Event PETH — {event_name}")
 
         event_times = self.groups[event_name]
         self.pre, self.post = self._read_window()
@@ -352,6 +350,8 @@ class _EventPethResultsDialog(QDialog):
                 "bins": self._bins_csv_rows}[self.active_view]()
 
     def _current_clipboard_text(self):
+        if self.active_view == "bins":                 # the window lists the first few bins of a long list; Copy takes every one
+            return self._group_bins_summary_text(full=True) or self.lbl_group.text()
         return self.lbl_group.text()
 
     def _csv_header_zscore(self):
@@ -420,7 +420,7 @@ class _EventPethResultsDialog(QDialog):
 
     def _csv_header_bins(self):
         header = ["Trial", "Trial Event Time (s)"]
-        header += [f"Bin {b['bin_start']:.1f}-{b['bin_end']:.1f}s Mean" for b in self._bin_edges()]
+        header += [f"Bin {r}s Mean" for r in api.stats.bin_ranges(self._bin_edges())]
         header.append("Checked")
         return header
 
@@ -445,13 +445,19 @@ class _EventPethResultsDialog(QDialog):
         rows.append(group_row)
         return rows
 
-    def _group_bins_summary_text(self):
+    def _group_bins_summary_text(self, full=False):
+        """The group's mean in each time bin, one "start-ends: mean" after another. In the window only the first MAX_BINS_SHOWN are listed
+        (a bin of 0.01 s over 20 s is 2000 of them, which would leave no room for the plot), then how many more there are; `full` is every one."""
         gp = self.last_group_peri
         if not gp or not gp.get("mean_bins"):
             return ""
-        return "Group Mean Time Bins — " + "  ".join(
-            f"{b['bin_start']:.1f}-{b['bin_end']:.1f}s: {b['mean']:.2f}" for b in gp["mean_bins"]
-        )
+        bins = gp["mean_bins"]
+        names = api.stats.bin_ranges(bins)
+        shown = len(bins) if full else min(len(bins), MAX_BINS_SHOWN)
+        text = "Group Mean Time Bins — " + "  ".join(f"{names[i]}s: {bins[i]['mean']:.2f}" for i in range(shown))
+        if shown < len(bins):
+            text += f"  … and {len(bins) - shown} more bins (Export CSV has every one)"
+        return text
 
     def _set_all_trials_checked(self, checked):
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
@@ -522,8 +528,8 @@ class _EventPethResultsDialog(QDialog):
             self.fig, time_axis=time_axis, trial_matrix=sub_matrix, trial_numbers=[i + 1 for i in selected],
             pre=self.pre, post=self.post, bin_s=self.bin_width, view=self.active_view,
             sort_by_peak=self.sort_combo.currentText() == self.SORT_PEAK_AMPLITUDE, signal_label=self.mode_str,
-            title=self.e_title.text(), event_name=self.event_name)
-        self.canvas.draw_idle()
+            event_name=self.event_name)
+        self.editable_figure.drawn()
 
 
 def launch_event_peth(ctx):
@@ -538,4 +544,4 @@ def launch_event_peth(ctx):
 
     initial_name = sorted(groups.keys())[0]
     dlg = _EventPethResultsDialog(ctx.win, ctx, groups, initial_name)
-    dlg.exec()
+    present(ctx, dlg, "Event PETH")

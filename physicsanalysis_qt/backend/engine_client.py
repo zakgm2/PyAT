@@ -13,7 +13,8 @@ that holds the open recordings and runs the operations, spoken to in JSON lines 
 Everything is asynchronous: `request` returns at once with a Request whose `future` completes with the result (or a BackendError), and
 progress, warnings and notes are handed to the callbacks as they arrive. The callbacks run on the client's reader thread, never on the
 caller's: a Qt window forwards them as signals (background.run_engine does). One request runs at a time in the engine, in the order they
-were sent; a cancel is cooperative (the engine stops at its next progress report).
+were sent; a cancel is cooperative (the engine stops at its next progress report), and `abort` is the other way: the process is ended, so the work stops
+that instant and the memory it held goes back to the system, whatever it was doing.
 
 If the engine dies the pending requests fail with a BackendError (code "engine_stopped") and the next request starts a new one — which has
 no recordings open, so `generation` goes up and a caller holding a recording id can tell that it is gone.
@@ -26,6 +27,7 @@ import atexit
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -159,6 +161,8 @@ class Request:
         self._link = link
         self._on_progress = on_progress
         self._on_event = on_event
+        self.stopping = False                 # a cancel was asked for (background.cancel_running): the next one ends the engine
+        self.aborted = False                  # the engine was ended to stop this request (EngineClient.abort)
 
     def result(self, timeout=None):
         return self.future.result(timeout)
@@ -186,6 +190,7 @@ class _Link:
         self.ready_event = threading.Event()
         self.stderr = deque(maxlen=60)
         self.closing = False
+        self.aborted = False                 # ended on purpose to stop a request (EngineClient.abort)
         self.dead = False
         self.write_lock = threading.Lock()
         self.stderr_thread = None
@@ -205,6 +210,7 @@ class EngineClient:
         self._generation = 0
         self._next_id = 0
         self._atexit = False
+        self._dead_dirs = []          # the data folders of engines that were ended (not shut down), which have not been removed yet
         self._unfit = None            # (message, hint) once an engine said it does not fit this app (backend/contract.py)
 
     # -- lifecycle ---------------------------------------------------------------------------------------------------------------------
@@ -259,6 +265,31 @@ class EngineClient:
         if link.transport.wait(timeout) is None:
             link.transport.kill()
             link.transport.wait(2.0)
+        self.sweep_dead_dirs()
+
+    def abort(self, request):
+        """Ends the engine process to stop `request` for good. A cancel is only noticed at the engine's next progress report, and one long call
+        (the photobleaching fit, most of a TDT load) reports none; this stops the work that instant and the memory it held goes back to the system.
+        The request fails with code "cancelled" (its error has `engine_ended`); whatever else was waiting on that engine fails with engine_stopped,
+        the recordings it held are gone (a caller holding a recording id sees `generation` go up), and the next request starts a new engine.
+        Returns False if there was nothing to stop (the request is over, or the engine it was sent to already ended)."""
+        link = request._link
+        if request.future.done() or link.dead or self._link is not link:
+            return False
+        request.aborted = True
+        link.aborted = True
+        link.transport.kill()
+        return True
+
+    def sweep_dead_dirs(self):
+        """Removes the data folders of engines that were ended by `abort`: an engine that is shut down removes its own, one that was ended cannot. A
+        file a window still has mapped cannot be deleted on Windows; that folder is kept to try again."""
+        remaining = []
+        for directory in self._dead_dirs:
+            shutil.rmtree(directory, ignore_errors=True)
+            if os.path.isdir(directory):
+                remaining.append(directory)
+        self._dead_dirs = remaining
 
     def restart(self):
         self.shutdown()
@@ -390,6 +421,9 @@ class EngineClient:
             thread.join(1.0)
         link.ready_event.set()
         link.transport.close()
+        if link.aborted and link.ready and link.ready.get("data_dir"):
+            self._dead_dirs.append(link.ready["data_dir"])
+            self.sweep_dead_dirs()
         message, code, hint = self._stopped(link)
         while link.pending:
             try:
@@ -397,13 +431,22 @@ class EngineClient:
             except KeyError:
                 break
             if not req.future.done():
-                req.future.set_exception(BackendError(message, code=code, hint=hint))
+                if req.aborted:
+                    error = BackendError("cancelled", code="cancelled")
+                    error.engine_ended = True
+                else:
+                    error = BackendError(message, code=code, hint=hint)
+                    error.engine_ended = link.aborted
+                req.future.set_exception(error)
 
     def _tail(self, link):
         return "\n".join(line for line in list(link.stderr)[-8:] if line)
 
     def _stopped(self, link):
         """(message, code, hint) for requests that found the engine gone."""
+        if link.aborted:
+            return ("the analysis engine was ended to cancel a task, so this did not run", "engine_stopped",
+                    "do it again; the recording on screen is being reconnected to a new engine")
         if link.closing:
             return "the analysis engine was shut down", "engine_stopped", None
         tail = self._tail(link)

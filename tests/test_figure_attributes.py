@@ -52,6 +52,24 @@ class TestTheRules(unittest.TestCase):
         self.assertEqual(attrs["line_colors"], {})
         self.assertFalse(A.set_line_color(attrs, NORMALIZED, None))
 
+    def test_a_point_size_is_kept_within_the_range_and_the_default_is_no_override(self):
+        attrs = V.default_plot_attrs()
+        self.assertTrue(A.set_point_size(attrs, 7))
+        self.assertEqual(attrs["point_size"], 7.0)
+        self.assertFalse(A.set_point_size(attrs, 7))                                           # unchanged
+        self.assertTrue(A.set_point_size(attrs, 99))
+        self.assertEqual(attrs["point_size"], float(V.MAX_POINT_SIZE))                         # no larger than the dialog's slider
+        self.assertTrue(A.set_point_size(attrs, -3))
+        self.assertIsNone(attrs["point_size"])                                                 # none at all is what a recording's lines have anyway
+        self.assertTrue(A.set_point_size(attrs, -3, default=4))
+        self.assertEqual(attrs["point_size"], 0.0)                                             # but where a table's columns have dots, 0 is a choice
+        self.assertTrue(A.set_point_size(attrs, 4, default=4))                                 # the size a table's columns have is no override
+        self.assertIsNone(attrs["point_size"])
+        A.set_point_size(attrs, 9, default=4)
+        self.assertTrue(A.set_point_size(attrs, None))                                         # None is back to the default
+        self.assertIsNone(attrs["point_size"])
+        self.assertFalse(A.set_point_size(attrs, None))
+
     def test_a_colour_and_a_legend_edit_follow_their_signal_to_its_new_name_and_two_can_swap(self):
         attrs = V.default_plot_attrs()
         attrs["line_colors"] = {"a": "red", "b": "blue", "marker": "green"}
@@ -118,6 +136,18 @@ class TestApply(unittest.TestCase):
             self.apply(attrs, rename=refuse, own_names=[NORMALIZED], signals={"normalized": {"label": NORMALIZED}}, texts={"title": "My title"},
                        sizes={"title_fs": "20"}, bold=False, entries=[(NORMALIZED, "x", True)])
         self.assertEqual(attrs, before)
+
+    def test_the_point_size_is_applied_only_when_one_is_given(self):
+        attrs, result = self.apply()
+        self.assertEqual((attrs["point_size"], result.points_changed), (None, False))
+        attrs, result = self.apply(point_size=6)
+        self.assertEqual((attrs["point_size"], result.points_changed), (6.0, True))
+        attrs, result = self.apply(attrs, point_size=6)
+        self.assertFalse(result.points_changed)
+        attrs, result = self.apply(attrs, texts={"title": "My title"})                          # something else edited: the size stays
+        self.assertEqual((attrs["point_size"], result.points_changed), (6.0, False))
+        attrs, result = self.apply(attrs, point_size=4, point_default=4)                         # the default size: no override any more
+        self.assertEqual((attrs["point_size"], result.points_changed), (None, True))
 
     def test_only_the_colours_listed_are_touched(self):
         attrs = V.default_plot_attrs()

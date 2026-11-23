@@ -1,7 +1,7 @@
 """
 plot/interaction.py
 -------------------
-Mouse/view interaction: rect-select zoom, right-click pan, blit-based
+Mouse/view interaction: rect-select zoom, right-click pan (the plot is drawn at every frame the machine can manage), blit-based
 hover tracker, scroll zoom, resize-safe zoom, reset zoom.
 """
 
@@ -12,7 +12,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import QInputDialog
 
-_PAN_MIN_FRAME_INTERVAL = 1 / 30  # cap pan redraws at ~30 fps
+_PAN_MIN_FRAME_INTERVAL = 1 / 60  # cap pan redraws at ~60 fps (a draw takes longer than this; draw_idle joins the asks that come while one is under way)
 
 from .. import figures
 from . import plotting
@@ -288,6 +288,16 @@ def on_press(ctx, event):
         ctx._rect_dragging = True
 
 
+def on_draw(ctx, event):
+    """After every full draw of the canvas: the hover marker is not in it (animated artists are drawn by blit, on top, as the pointer moves), so it is
+    marked not visible until the next mouse move shows it again. matplotlib's RectangleSelector (registered after this, so it sees them hidden) draws the
+    whole canvas once more after every draw in which an animated artist is visible — which doubled the time of every redraw, every frame of a pan."""
+    for dot in ctx.tracker_dots:
+        dot.set_visible(False)
+    if ctx.connecting_line is not None:
+        ctx.connecting_line.set_visible(False)
+
+
 def on_motion(ctx, event):
     ax, canvas, fig = ctx.ax, ctx.canvas, ctx.fig
 
@@ -331,16 +341,14 @@ def on_motion(ctx, event):
         ax.set_xlim(xlim[0] - shift_x, xlim[1] - shift_x)
         ax.set_ylim(ylim[0] - shift_y, ylim[1] - shift_y)
 
-        # Redrawing a long trace (TDT/Oxysoft recordings can be hundreds of
-        # thousands of samples) on every single mouse-move tick is the
-        # actual bottleneck — Qt's draw_idle() coalescing doesn't help
-        # because each individual redraw is itself slow, so the event queue
-        # backs up. Cap the redraw rate instead; xlim/ylim above still
-        # update every tick (cheap), so the final position is always
-        # correct even on frames we skip drawing.
+        # What is on screen while it is dragged is always the plot, drawn: a picture of it moved by the pointer (tried, and dropped) left strips of
+        # nothing where the data came into view and the old axis numbers and legend until the next real draw. The limits above are changed at every
+        # tick (cheap), so where the drag ends is exact; a draw is asked for at a capped rate, and draw_idle joins the asks that come while one is under
+        # way, so a slow machine draws as often as it can and does not fall behind. A draw renders once (see on_draw).
         now = time.monotonic()
         if now - ctx._last_pan_draw_time >= _PAN_MIN_FRAME_INTERVAL:
             ctx._last_pan_draw_time = now
+            plotting.update_decimated_lines(ctx)           # (the traces thinned to the range now in view: once per frame asked for, not per pointer move)
             canvas.draw_idle()
         return
 
@@ -453,8 +461,10 @@ def _refresh_hover_bg(ctx):
 
     for dot, (xd, yd) in zip(ctx.tracker_dots, saved_dots):
         dot.set_data(xd, yd)
+        dot.set_visible(len(xd) > 0)                      # (the full draw above hid them: see on_draw)
     if ctx.connecting_line is not None:
         ctx.connecting_line.set_data(*saved_conn)
+        ctx.connecting_line.set_visible(len(saved_conn[0]) > 0)
 
     if any(len(d.get_xdata()) > 0 for d in ctx.tracker_dots):
         ctx.canvas.restore_region(ctx._hover_bg)
@@ -516,7 +526,8 @@ def on_release(ctx, event):
     was_dragging = ctx.is_dragging
     ctx.is_dragging = False
     if was_dragging:
-        _refresh_hover_bg(ctx)
+        plotting.update_decimated_lines(ctx)           # (the range the drag ended on: the moves since the last frame asked for did not thin the traces)
+        _refresh_hover_bg(ctx)                         # (the plot drawn properly where the drag ended)
 
     if ctx._rect_dragging:
         ctx._rect_dragging = False

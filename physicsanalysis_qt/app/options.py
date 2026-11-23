@@ -14,7 +14,10 @@ from PyQt6.QtWidgets import (
 )
 
 from . import errorlog
+from ..backend import api
 from ..plot import plotting
+from .pipeline_dialog import PipelineDialog, confirm_reload, holds_unsaved_work, summarize
+from .toasts import show_error, show_window_toast
 from .window_fit import scroll_body, fit_dialog_to_content
 
 
@@ -23,13 +26,6 @@ _ENGINE_LABELS = {
     "pyqtgraph":  "PyQtGraph (GPU-accelerated)",
 }
 _ENGINE_VALUES = {v: k for k, v in _ENGINE_LABELS.items()}
-
-_REGRESSION_LABELS = {
-    "ols":    "OLS (default — plain least-squares, no robustness)",
-    "ransac": "RANSAC (excludes severe artifacts entirely)",
-    "huber":  "Huber (downweights outliers instead of excluding them)",
-}
-_REGRESSION_VALUES = {v: k for k, v in _REGRESSION_LABELS.items()}
 
 
 class OptionsDialog(QDialog):
@@ -65,28 +61,28 @@ class OptionsDialog(QDialog):
         g0.addWidget(engine_note, 1, 0, 1, 2)
         layout.addWidget(gb_engine)
 
-        gb_regression = QGroupBox("Motion Correction (TDT)")
-        gr = QGridLayout(gb_regression)
-        gr.addWidget(QLabel("Regression:"), 0, 0)
-        self.combo_regression = QComboBox()
-        self.combo_regression.addItems(list(_REGRESSION_LABELS.values()))
-        self.combo_regression.setCurrentText(
-            _REGRESSION_LABELS[ctx.settings.get("regression_method", "ols")])
-        gr.addWidget(self.combo_regression, 0, 1)
-        regression_note = QLabel(
-            "Used to regress the isosbestic (415nm) stream onto the signal (465nm)\n"
-            "stream during motion correction. Clicking OK reprocesses the currently\n"
-            "loaded TDT recording with the new method right away — no separate Reload\n"
-            "needed — and it applies to anything opened after this point too.\n"
-            "The three methods can give noticeably different results on the same\n"
-            "recording (e.g. how much of a transient near a motion artifact survives) —\n"
-            "worth trying each one to see what you actually get before settling on\n"
-            "one for a given dataset."
+        from ..loading.common import pipeline_settings               # (loading imports the window, which imports this: so not at the top)
+        gb_pipeline = QGroupBox("Processing Pipeline")
+        gpl = QGridLayout(gb_pipeline)
+        self.pipeline_choice = pipeline_settings(ctx)                # {option name: value} of those that are not their default
+        self.regression_choice = ctx.settings.get("regression_method", "ols")
+        self.lbl_pipeline = QLabel(summarize(self.pipeline_choice, self.regression_choice))
+        self.lbl_pipeline.setWordWrap(True)
+        gpl.addWidget(self.lbl_pipeline, 0, 0)
+        self.btn_pipeline = QPushButton("Pipeline options…")
+        self.btn_pipeline.clicked.connect(self._choose_pipeline)
+        gpl.addWidget(self.btn_pipeline, 0, 1)
+        pipeline_note = QLabel(
+            "The choices the processing makes: the motion-correction method and the stretch it is fitted over, the dF/F\n"
+            "baseline, the low-pass filter, the smoothing every event-locked analysis starts with, and the baseline a\n"
+            "z-score is taken against. Clicking OK reprocesses the currently loaded recording with them right away and\n"
+            "they apply to anything opened after this point too, group analyses included. The Copy pipeline button at the\n"
+            "bottom of the window writes down what the recording on screen was processed with, as a methods paragraph."
         )
-        regression_note.setStyleSheet("color: gray;")
-        regression_note.setWordWrap(True)
-        gr.addWidget(regression_note, 1, 0, 1, 2)
-        layout.addWidget(gb_regression)
+        pipeline_note.setStyleSheet("color: gray;")
+        pipeline_note.setWordWrap(True)
+        gpl.addWidget(pipeline_note, 1, 0, 1, 2)
+        layout.addWidget(gb_pipeline)
 
         gb_folder = QGroupBox("Folders")
         g1 = QGridLayout(gb_folder)
@@ -208,7 +204,22 @@ class OptionsDialog(QDialog):
         if path:
             self.e_output_folder.setText(path)
 
+    def _choose_pipeline(self):
+        description = api.pipeline.describe()
+        dlg = PipelineDialog(self, description, {**description["defaults"], **self.pipeline_choice}, self.regression_choice)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.pipeline_choice = dlg.changed()
+            self.regression_choice = dlg.regression_method()
+            self.lbl_pipeline.setText(summarize(self.pipeline_choice, self.regression_choice))
+
     def _apply(self):
+        from ..loading.common import pipeline_settings, reopen_current
+        previous_pipeline = dict(self.ctx.settings.get("pipeline") or {})
+        pipeline_changed = self.pipeline_choice != pipeline_settings(self.ctx)
+        recording_loaded = self.ctx.cache is not None and self.ctx.recording_id is not None
+        if pipeline_changed and recording_loaded and holds_unsaved_work(self.ctx) and not confirm_reload(self):
+            return                                                   # (nothing is changed: the dialog stays open)
+
         folder = self.e_folder.text().strip()
         if folder and os.path.isdir(folder):
             self.ctx.settings["default_folder"] = folder
@@ -227,9 +238,10 @@ class OptionsDialog(QDialog):
         engine_changed = new_engine != self.ctx.settings["plot_engine"]
         self.ctx.settings["plot_engine"] = new_engine
 
-        new_regression = _REGRESSION_VALUES[self.combo_regression.currentText()]
+        new_regression = self.regression_choice
         regression_changed = new_regression != self.ctx.settings.get("regression_method", "ols")
         self.ctx.settings["regression_method"] = new_regression
+        self.ctx.settings["pipeline"] = dict(self.pipeline_choice)
 
         new_theme = self.combo_theme.currentText().lower()
         theme_changed = new_theme != self.ctx.settings.get("theme", "light")
@@ -238,6 +250,7 @@ class OptionsDialog(QDialog):
         from ..context import save_settings
         save_settings(self.ctx.settings)
         errorlog.action("options_changed", plot_engine=new_engine, theme=new_theme, regression_method=new_regression,
+                        pipeline_options_changed=len(self.pipeline_choice),
                         background_loading=self.ctx.settings["background_loading"],
                         decimate_max_points=self.ctx.settings["decimate_max_points"],
                         output_folder_set=bool(self.ctx.settings.get("output_folder")))
@@ -256,7 +269,16 @@ class OptionsDialog(QDialog):
             from ..ui.main_window import switch_plot_engine
             switch_plot_engine(self.ctx)
 
-        if regression_changed and self.ctx.cache is not None and self.ctx.cache.get('source') == 'TDT':
+        if pipeline_changed and recording_loaded:
+            ctx = self.ctx
+
+            def _refused(message):                                   # (the choices are not kept if the recording cannot be processed with them)
+                ctx.settings["pipeline"] = previous_pipeline
+                save_settings(ctx.settings)
+                show_error(ctx, f"The recording could not be processed with these pipeline options, so they were not kept:\n{message}")
+
+            reopen_current(ctx, after=lambda opened: show_window_toast(ctx, "Pipeline options applied"), on_error=_refused)     # (with the motion correction set above, too)
+        elif regression_changed and self.ctx.cache is not None and self.ctx.cache.get('source') == 'TDT':
             from ..ui.toolbar import _reload_current
             _reload_current(self.ctx)
 

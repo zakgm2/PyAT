@@ -58,6 +58,61 @@ class BackendContract:
         first["label"] = "changed"
         self.assertNotEqual(self.b.saved.default_marker().get("label"), "changed")
 
+    def test_a_new_marker_has_a_time_a_name_a_colour_and_a_size(self):
+        marker = self.b.saved.new_marker(12.5, label="Lick", color="#FF0000", fontsize=10)
+        self.assertEqual(marker, {"time": 12.5, "label": "Lick", "color": "#FF0000", "fontsize": 10})
+        plain = self.b.saved.new_marker(3)
+        self.assertEqual(plain["time"], 3.0)
+        self.assertTrue(plain["label"] and plain["color"] and plain["fontsize"])                   # (what is left out is the default)
+        with self.assertRaises(ValueError):
+            self.b.saved.new_marker("soon")
+
+    def test_a_new_highlight_runs_from_the_earlier_time_to_the_later_one(self):
+        colour = next(iter(self.b.saved.highlight_colors.values()))
+        self.assertEqual(self.b.saved.new_highlight(9, 4, colour), {"start": 4.0, "end": 9.0, "color": colour})
+        with self.assertRaises(ValueError):
+            self.b.saved.new_highlight(5, 5, colour)                                               # (nothing between two equal times)
+
+    def test_a_new_text_box_has_to_say_something(self):
+        box = self.b.saved.new_text_annotation(10, 2.5, "  hello ", 12)
+        self.assertEqual((box["x"], box["y"], box["text"], box["fontsize"]), (10.0, 2.5, "hello", 12))
+        with self.assertRaises(ValueError):
+            self.b.saved.new_text_annotation(10, 2.5, "   ")
+
+    def test_trimming_the_ends_leaves_the_range_between_them(self):
+        x = [0.0, 10.0, 20.0, 40.0]
+        self.assertEqual(self.b.recording.trim_range(x, 5.0, 3.0), (5.0, 37.0))
+        for first, last in ((0.0, 0.0), (-1.0, 2.0), (20.0, 20.0)):
+            with self.assertRaises(ValueError, msg=(first, last)):
+                self.b.recording.trim_range(x, first, last)
+
+    def test_a_duration_is_said_in_seconds_then_minutes(self):
+        self.assertEqual(self.b.recording.describe_duration(44.0), "44 s")
+        self.assertEqual(self.b.recording.describe_duration(150.0), "2.5 min")
+
+    def test_a_groups_values_have_a_mean_a_spread_and_quartiles(self):
+        s = self.b.group.summary_stats([1.0, 2.0, 4.0, 8.0, 16.0])
+        self.assertEqual(s["n"], 5)
+        self.assertAlmostEqual(s["mean"], 6.2)
+        self.assertEqual(set(s), {"n", "mean", "sem", "q1", "median", "q3"})
+        self.assertEqual(self.b.group.summary_stats([])["n"], 0)
+
+    def test_the_points_of_a_normal_qq_plot_and_its_line(self):
+        qq = self.b.group.normal_qq([0.5, -1.0, 2.0, 0.1, -0.3])
+        self.assertEqual(set(qq), {"theoretical", "ordered", "slope", "intercept"})
+        self.assertEqual(len(qq["theoretical"]), len(qq["ordered"]))
+
+    def test_a_p_value_is_written_as_stars(self):
+        self.assertEqual(self.b.group.significance_stars(float("nan")), "")
+        self.assertEqual(self.b.group.significance_stars(0.7), "ns")
+        self.assertTrue(self.b.group.significance_stars(0.0001).startswith("*"))
+
+    def test_markers_are_pooled_into_one_value_per_subject_for_a_group(self):
+        import pandas as pd
+        means = pd.DataFrame([{"measure": "auc", "subject": "s1", "marker": "A", "mean": 1.0}])
+        out = self.b.group.pooled_subject_values(means, "auc", {"A": ["A"], "Z": ["Z"]})
+        self.assertEqual(list(out), ["A", "Z"])                                                   # (every label, in the order given)
+
     def test_the_two_splice_modes_are_different_words(self):
         r = self.b.recording
         self.assertIsInstance(r.splice_cut_out, str)
@@ -151,6 +206,15 @@ class BackendContract:
         self.assertIsInstance(list(self.b.stats.find_fft_peaks(freqs, power, n_peaks=2)), list)
         self.assertGreater(len(self.b.stats.bin_for_heatmap(np.arange(1000.0))), 0)
 
+    def test_bins_are_named_by_their_edges_with_decimals_enough_to_tell_them_apart(self):
+        def edges(width, n):
+            return [{"bin_start": k * width, "bin_end": (k + 1) * width, "mean": 0.0} for k in range(n)]
+        self.assertEqual(self.b.stats.bin_ranges(edges(1.0, 3)), ["0.0-1.0", "1.0-2.0", "2.0-3.0"])
+        self.assertEqual(self.b.stats.bin_ranges(edges(0.05, 3)), ["0.00-0.05", "0.05-0.10", "0.10-0.15"])
+        names = self.b.stats.bin_ranges(edges(0.01, 2000))
+        self.assertEqual((len(set(names)), names[0], names[-1]), (2000, "0.00-0.01", "19.99-20.00"))
+        self.assertEqual(self.b.stats.bin_ranges([]), [])
+
     def test_the_area_under_a_flat_trace(self):
         auc = self.b.stats.auc_from_trace(np.array([0.0, 1.0, 2.0]), np.array([1.0, 1.0, 1.0]))
         self.assertAlmostEqual(auc["total_auc"], 2.0)
@@ -167,6 +231,41 @@ class BackendContract:
             self.assertEqual(o.unique_path(path), path)
             open(path, "w").close()
             self.assertNotEqual(o.unique_path(path), path)
+
+    # ---- the processing pipeline's choices
+    def test_the_pipelines_choices_come_as_data_the_options_window_can_show(self):
+        described = self.b.pipeline.describe()
+        self.assertIsInstance(described["steps"], list)
+        names = []
+        for step in described["steps"]:
+            self.assertTrue({"name", "title", "sources", "options"} <= set(step))
+            self.assertTrue(step["sources"] is None or isinstance(step["sources"], list))
+            for option in step["options"]:
+                self.assertTrue({"name", "key", "kind", "default", "label", "doc", "choices", "minimum", "maximum", "unit"} <= set(option), option)
+                self.assertIn(option["kind"], ("choice", "bool", "float", "int", "seconds_or_none"))
+                self.assertTrue(option["name"].startswith(step["name"] + "."))
+                names.append(option["name"])
+        self.assertEqual(sorted(described["defaults"]), sorted(names))                     # every option has a default, and nothing else does
+        for step in described["steps"]:
+            for option in step["options"]:
+                self.assertEqual(described["defaults"][option["name"]], option["default"])
+
+    def test_it_says_why_a_set_of_pipeline_options_cannot_be_used(self):
+        pipeline = self.b.pipeline
+        self.assertIsNone(pipeline.problem({}))
+        self.assertIsNone(pipeline.problem(pipeline.describe()["defaults"]))
+        reason = pipeline.problem({"no.such.option": 1})
+        self.assertIsInstance(reason, str)
+        self.assertIn("no.such.option", reason)
+
+    def test_group_settings_carry_the_pipeline_options_and_start_the_smoothing_from_them(self):
+        g = self.b.group
+        self.assertEqual(g.new_settings().pipeline, {})
+        seeded = g.new_settings(pipeline={"smoothing.window_s": 1.5})
+        self.assertEqual(seeded.pipeline, {"smoothing.window_s": 1.5})
+        self.assertEqual(seeded.smooth_seconds, 1.5)
+        self.assertEqual(g.new_settings(pipeline={"smoothing.window_s": 1.5}, smooth_seconds=0.2).smooth_seconds, 0.2)         # (what is given is used)
+        self.assertEqual(g.new_settings(pipeline={"smoothing.window_s": 1.5}).to_dict()["pipeline"], {"smoothing.window_s": 1.5})
 
     def test_markers_are_grouped_by_name(self):
         self.assertIsInstance(self.b.markers.group_by_name({"markers": [], "store_labels": {}}, {}), dict)
